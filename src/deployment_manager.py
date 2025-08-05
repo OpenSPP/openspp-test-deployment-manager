@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import git
 import yaml
@@ -963,6 +964,23 @@ class DeploymentManager:
             
         return []
     
+    def _get_single_repo_versions(self, repo_info: Tuple[str, str]) -> Tuple[str, List[str]]:
+        """Get versions for a single repository - helper for parallel processing"""
+        repo_name, remote_url = repo_info
+        
+        try:
+            if self.git_cache:
+                # Get branches and tags from cache
+                branches = self.git_cache.get_available_branches(remote_url)
+                tags = self.git_cache.get_available_tags(remote_url)
+                return repo_name, branches + tags
+            else:
+                # No cache available
+                return repo_name, []
+        except Exception as e:
+            logger.debug(f"Failed to get versions for {repo_name}: {e}")
+            return repo_name, []
+    
     def get_available_dependencies(self) -> Dict[str, List[str]]:
         """Get all available dependencies from repos.yaml template"""
         from src.performance_tracker import performance_tracker
@@ -995,25 +1013,48 @@ class DeploymentManager:
                     repos = read_yaml_file(str(repos_yaml_path))
                 
                 dependencies = {}
-                repo_count = len([r for r in repos.items() if r[0] != './odoo'])
-                with performance_tracker.track_operation(f"Fetch versions for {repo_count} dependency repos", show_progress=True, expected_duration=repo_count * 2.0):
-                    for repo_name, repo_config in repos.items():
-                        if repo_name == './odoo':
-                            continue  # Skip odoo itself
+                
+                # Prepare repository info for parallel processing
+                repo_infos = []
+                for repo_name, repo_config in repos.items():
+                    if repo_name == './odoo':
+                        continue  # Skip odoo itself
+                    
+                    if 'remotes' in repo_config:
+                        # Get repository URL
+                        for remote_name, remote_url in repo_config['remotes'].items():
+                            repo_infos.append((repo_name, remote_url))
+                            break
+                
+                repo_count = len(repo_infos)
+                if repo_count > 0 and self.git_cache:
+                    # Use ThreadPoolExecutor to fetch versions for all repos in parallel
+                    with performance_tracker.track_operation(f"Fetch versions for {repo_count} dependency repos (parallel)", show_progress=True, expected_duration=2.0):
+                        # Limit max workers to avoid overwhelming git operations
+                        max_workers = min(repo_count, 6)  # Max 6 concurrent git operations
                         
-                        if 'remotes' in repo_config:
-                            # Get repository URL
-                            for remote_name, remote_url in repo_config['remotes'].items():
-                                if self.git_cache:
-                                    # Get branches and tags from cache
-                                    with performance_tracker.track_operation(f"Get versions for {repo_name}", show_progress=False):
-                                        branches = self.git_cache.get_available_branches(remote_url)
-                                        tags = self.git_cache.get_available_tags(remote_url)
-                                        dependencies[repo_name] = branches + tags
-                                else:
-                                    # Just include the repository name
+                        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                            # Submit all repo version requests
+                            future_to_repo = {
+                                executor.submit(self._get_single_repo_versions, repo_info): repo_info 
+                                for repo_info in repo_infos
+                            }
+                            
+                            # Collect results as they complete
+                            for future in as_completed(future_to_repo):
+                                try:
+                                    repo_name, versions = future.result()
+                                    dependencies[repo_name] = versions
+                                except Exception as e:
+                                    repo_info = future_to_repo[future]
+                                    repo_name = repo_info[0]
+                                    logger.debug(f"Failed to get versions for {repo_name}: {e}")
                                     dependencies[repo_name] = []
-                                break
+                else:
+                    # No cache or no repos - just add empty lists
+                    for repo_name, repo_config in repos.items():
+                        if repo_name != './odoo' and 'remotes' in repo_config:
+                            dependencies[repo_name] = []
                 
                 # Clean up temp dir if created
                 if not self.git_cache and 'temp_dir' in locals():
