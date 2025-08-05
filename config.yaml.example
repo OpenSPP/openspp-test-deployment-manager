@@ -1,0 +1,35 @@
+# OpenSPP Deployment Manager Configuration Example
+#
+# SECURITY WARNING: This application has NO AUTHENTICATION!
+# Only deploy on private networks or behind VPN.
+# Never expose to the public internet.
+
+deployment:
+  base_path: ./deployments
+  max_per_tester: 3
+
+git:
+  openspp_docker_repo: https://github.com/OpenSPP/openspp-docker.git
+  default_branch: "17.0"
+
+docker:
+  resource_limits:
+    cpu: "2"
+    memory: "4GB"
+  health_check:
+    timeout: 300  # seconds to wait for services to be healthy
+    skip: false   # set to true to skip health checks entirely
+
+ports:
+  range_start: 18000
+  range_end: 19000
+
+domain:
+  base: test.openspp.org
+
+nginx:
+  enabled: false
+
+development:
+  # Preserve failed deployments for debugging (stops containers but keeps files and logs)
+  preserve_failed_deployments: false  # Set to true during development to debug failed deployments

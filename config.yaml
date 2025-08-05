@@ -1,0 +1,46 @@
+# OpenSPP Deployment Manager Configuration - Mac Version
+app:
+  title: "OpenSPP Deployment Manager"
+  port: 8501
+  debug: false
+
+deployment:
+  base_path: "./deployments"
+  max_per_tester: 3
+  
+git:
+  openspp_docker_repo: "https://github.com/OpenSPP/openspp-docker.git"
+  default_branch: "17.0"
+  
+docker:
+  compose_command: "docker compose"
+  project_prefix: "openspp"
+  resource_limits:
+    cpu: "2"
+    memory: "4GB"
+    
+ports:
+  range_start: 18000
+  range_end: 19000
+  services:
+    odoo: 0      # base + 0
+    smtp: 25     # base + 25  
+    pgweb: 81    # base + 81
+    debugger: 84 # base + 84
+    
+domain:
+  base: "localhost"  # Changed for Mac - no subdomain routing
+  ssl: false
+  
+monitoring:
+  status_check_interval: 60  # seconds
+  log_retention_days: 7
+  
+cleanup:
+  auto_cleanup: true
+  stopped_deployment_days: 7
+  orphaned_check_interval: 3600  # seconds
+  
+# Mac-specific settings
+nginx:
+  enabled: false  # Disable Nginx features on Mac
