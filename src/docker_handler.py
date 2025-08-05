@@ -8,6 +8,7 @@ import json
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import docker
 from docker.errors import NotFound, APIError
@@ -189,8 +190,75 @@ class DockerComposeHandler:
         
         return status
     
+    def _get_single_container_stats(self, container) -> Tuple[str, Dict]:
+        """Get stats for a single container - helper for parallel processing"""
+        service = container.labels.get("com.docker.compose.service", "unknown")
+        
+        try:
+            # Skip unhealthy containers to avoid API hangs
+            health = self._get_container_health(container)
+            if health == "unhealthy":
+                logger.debug(f"Skipping stats for unhealthy container: {service}")
+                return service, {
+                    "cpu_percent": 0,
+                    "memory_usage": 0,
+                    "memory_limit": 0,
+                    "memory_percent": 0,
+                    "status": "unhealthy"
+                }
+            
+            # Get stats (non-streaming) - this is the slow part we're parallelizing
+            container_stats = container.stats(stream=False)
+            
+            # Calculate CPU percentage
+            cpu_delta = container_stats['cpu_stats']['cpu_usage']['total_usage'] - \
+                       container_stats['precpu_stats']['cpu_usage']['total_usage']
+            system_delta = container_stats['cpu_stats']['system_cpu_usage'] - \
+                          container_stats['precpu_stats']['system_cpu_usage']
+            cpu_percent = 0.0
+            if system_delta > 0:
+                cpu_percent = (cpu_delta / system_delta) * 100.0
+            
+            # Memory usage
+            memory_usage = container_stats['memory_stats'].get('usage', 0)
+            memory_limit = container_stats['memory_stats'].get('limit', 0)
+            memory_percent = 0.0
+            if memory_limit > 0:
+                memory_percent = (memory_usage / memory_limit) * 100.0
+            
+            # Network stats (handle missing eth0 interface gracefully)
+            network_rx = 0
+            network_tx = 0
+            if 'networks' in container_stats and container_stats['networks']:
+                # Get first network interface stats
+                first_network = list(container_stats['networks'].values())[0]
+                network_rx = first_network.get('rx_bytes', 0)
+                network_tx = first_network.get('tx_bytes', 0)
+            
+            return service, {
+                "cpu_percent": round(cpu_percent, 2),
+                "memory_usage": memory_usage,
+                "memory_limit": memory_limit,
+                "memory_percent": round(memory_percent, 2),
+                "network_rx": network_rx,
+                "network_tx": network_tx,
+                "status": "healthy"
+            }
+            
+        except Exception as e:
+            logger.debug(f"Failed to get stats for {service}: {e}")
+            return service, {
+                "cpu_percent": 0,
+                "memory_usage": 0,
+                "memory_limit": 0,
+                "memory_percent": 0,
+                "network_rx": 0,
+                "network_tx": 0,
+                "status": "error"
+            }
+    
     def get_container_stats(self) -> Dict[str, Dict]:
-        """Get resource usage stats for containers"""
+        """Get resource usage stats for containers - parallelized for performance"""
         from .performance_tracker import PerformanceTracker
         performance_tracker = PerformanceTracker()
         
@@ -205,74 +273,39 @@ class DockerComposeHandler:
                     filters={"label": f"com.docker.compose.project={self.project_name}"}
                 )
             
-            with performance_tracker.track_operation(f"Get stats for {len(containers)} containers {self.project_name}", show_progress=False):
-                for container in containers:
-                    service = container.labels.get("com.docker.compose.service", "unknown")
+            if not containers:
+                return stats
+            
+            # Use ThreadPoolExecutor to get stats for all containers in parallel
+            with performance_tracker.track_operation(f"Get stats for {len(containers)} containers (parallel) {self.project_name}", show_progress=False):
+                # Limit max workers to avoid overwhelming the Docker daemon
+                max_workers = min(len(containers), 8)  # Max 8 concurrent requests
+                
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    # Submit all container stats requests
+                    future_to_container = {
+                        executor.submit(self._get_single_container_stats, container): container 
+                        for container in containers
+                    }
                     
-                    try:
-                        # Skip unhealthy containers to avoid API hangs
-                        health = self._get_container_health(container)
-                        if health == "unhealthy":
-                            logger.debug(f"Skipping stats for unhealthy container: {service}")
+                    # Collect results as they complete
+                    for future in as_completed(future_to_container):
+                        try:
+                            service, container_stats = future.result()
+                            stats[service] = container_stats
+                        except Exception as e:
+                            container = future_to_container[future]
+                            service = container.labels.get("com.docker.compose.service", "unknown")
+                            logger.debug(f"Failed to get stats for {service}: {e}")
                             stats[service] = {
                                 "cpu_percent": 0,
                                 "memory_usage": 0,
                                 "memory_limit": 0,
                                 "memory_percent": 0,
-                                "status": "unhealthy"
+                                "network_rx": 0,
+                                "network_tx": 0,
+                                "status": "error"
                             }
-                            continue
-                        
-                        # Get stats (non-streaming) - this can be slow
-                        with performance_tracker.track_operation(f"Get stats for {service}", show_progress=False):
-                            container_stats = container.stats(stream=False)
-                        
-                        # Calculate CPU percentage
-                        cpu_delta = container_stats['cpu_stats']['cpu_usage']['total_usage'] - \
-                                   container_stats['precpu_stats']['cpu_usage']['total_usage']
-                        system_delta = container_stats['cpu_stats']['system_cpu_usage'] - \
-                                      container_stats['precpu_stats']['system_cpu_usage']
-                        cpu_percent = 0.0
-                        if system_delta > 0:
-                            cpu_percent = (cpu_delta / system_delta) * 100.0
-                        
-                        # Memory usage
-                        memory_usage = container_stats['memory_stats'].get('usage', 0)
-                        memory_limit = container_stats['memory_stats'].get('limit', 0)
-                        memory_percent = 0.0
-                        if memory_limit > 0:
-                            memory_percent = (memory_usage / memory_limit) * 100.0
-                        
-                        # Network stats (handle missing eth0 interface gracefully)
-                        network_rx = 0
-                        network_tx = 0
-                        if 'networks' in container_stats and container_stats['networks']:
-                            # Get first network interface stats
-                            first_network = list(container_stats['networks'].values())[0]
-                            network_rx = first_network.get('rx_bytes', 0)
-                            network_tx = first_network.get('tx_bytes', 0)
-                        
-                        stats[service] = {
-                            "cpu_percent": round(cpu_percent, 2),
-                            "memory_usage": memory_usage,
-                            "memory_limit": memory_limit,
-                            "memory_percent": round(memory_percent, 2),
-                            "network_rx": network_rx,
-                            "network_tx": network_tx,
-                            "status": "healthy"
-                        }
-                        
-                    except Exception as e:
-                        logger.debug(f"Failed to get stats for {service}: {e}")
-                        stats[service] = {
-                            "cpu_percent": 0,
-                            "memory_usage": 0,
-                            "memory_limit": 0,
-                            "memory_percent": 0,
-                            "network_rx": 0,
-                            "network_tx": 0,
-                            "status": "error"
-                        }
                     
         except Exception as e:
             logger.error(f"Failed to get container stats: {e}")
