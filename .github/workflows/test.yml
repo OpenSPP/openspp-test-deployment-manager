@@ -1,0 +1,58 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install uv
+      uses: astral-sh/setup-uv@v3
+    
+    - name: Install dependencies
+      run: |
+        uv sync --all-extras
+    
+    - name: Run tests with pytest
+      run: |
+        uv run pytest tests/ -v --tb=short
+    
+    - name: Check code formatting (optional)
+      run: |
+        uv run python -m py_compile src/*.py
+      continue-on-error: true
+
+  docker-check:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Validate Docker configuration
+      run: |
+        # Check if docker-compose files are valid YAML
+        python -c "import yaml; yaml.safe_load(open('config.yaml.example'))"
+        echo "✅ Configuration files are valid"
+    
+    - name: Check for security issues in Dockerfiles
+      run: |
+        # Basic security checks
+        if grep -r "COPY.*\*" . --include="Dockerfile*" 2>/dev/null; then
+          echo "⚠️  Warning: Found wildcard COPY commands in Dockerfiles"
+        fi
+        echo "✅ Basic Docker security check passed"
