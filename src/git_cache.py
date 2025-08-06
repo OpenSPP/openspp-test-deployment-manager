@@ -17,13 +17,15 @@ logger = logging.getLogger(__name__)
 class GitCacheManager:
     """Manages cached git repositories for faster deployment"""
     
-    def __init__(self, cache_path: str):
+    def __init__(self, cache_path: str, shallow_depth: int = 1):
         self.cache_path = Path(cache_path)
         ensure_directory(str(self.cache_path))
         # Add caching for branches/tags to avoid repeated fetches
         self._branch_cache = {}  # {repo_url: {'branches': [...], 'tags': [...], 'timestamp': ...}}
         self._cache_ttl = timedelta(minutes=5)  # Cache for 5 minutes
         self._last_fetch = {}  # Track last fetch time per repo
+        self.shallow_depth = shallow_depth  # Depth for shallow clones
+        self.large_repo_patterns = ['odoo/odoo', 'OCA/OCB']  # Repos to always shallow clone
         
     def get_cache_key(self, repo_url: str) -> str:
         """Generate cache key from repository URL"""
@@ -41,9 +43,17 @@ class GitCacheManager:
         cache_key = self.get_cache_key(repo_url)
         return self.cache_path / cache_key
     
-    def update_or_clone_repo(self, repo_url: str, branch: Optional[str] = None, force_update: bool = False) -> Path:
-        """Update existing repo or clone new one"""
+    def _is_large_repo(self, repo_url: str) -> bool:
+        """Check if this is a known large repository that should be shallow cloned"""
+        return any(pattern in repo_url for pattern in self.large_repo_patterns)
+    
+    def update_or_clone_repo(self, repo_url: str, branch: Optional[str] = None, force_update: bool = False, 
+                           force_shallow: bool = None) -> Path:
+        """Update existing repo or clone new one with optimized shallow cloning"""
         repo_path = self.get_cached_repo_path(repo_url)
+        
+        # Determine if we should use shallow clone
+        use_shallow = force_shallow if force_shallow is not None else self._is_large_repo(repo_url)
         
         if repo_path.exists():
             # Check if update is needed based on cache TTL
@@ -65,15 +75,29 @@ class GitCacheManager:
             try:
                 repo = git.Repo(repo_path)
                 
-                # Fetch all branches and tags
-                repo.git.fetch('--all', '--tags')
+                # For shallow repos, only fetch what we need
+                if use_shallow:
+                    if branch:
+                        # Only fetch the specific branch with limited depth
+                        repo.git.fetch('origin', branch, '--depth', str(self.shallow_depth))
+                    else:
+                        # Fetch with limited depth
+                        repo.git.fetch('--depth', str(self.shallow_depth), '--tags')
+                else:
+                    # Full fetch for non-shallow repos
+                    repo.git.fetch('--all', '--tags')
+                
                 self._last_fetch[repo_url] = datetime.now()
                 
                 # If specific branch requested, checkout
                 if branch:
                     try:
                         repo.git.checkout(branch)
-                        repo.git.pull('origin', branch)
+                        if use_shallow:
+                            # For shallow repos, use fetch instead of pull to maintain shallow depth
+                            repo.git.reset('--hard', f'origin/{branch}')
+                        else:
+                            repo.git.pull('origin', branch)
                     except git.GitCommandError:
                         # Might be a tag, try checking it out
                         repo.git.checkout(branch)
@@ -87,15 +111,26 @@ class GitCacheManager:
                 shutil.rmtree(repo_path)
         
         # Clone new repository
-        logger.info(f"Cloning repository to cache: {repo_url}")
+        clone_type = "shallow" if use_shallow else "full"
+        logger.info(f"Cloning repository to cache ({clone_type}): {repo_url}")
         try:
-            # Clone with all branches
-            git.Repo.clone_from(
-                repo_url,
-                repo_path,
-                branch=branch,
-                no_single_branch=True  # Clone all branches
-            )
+            clone_args = {
+                'url': repo_url,
+                'to_path': repo_path,
+                'branch': branch
+            }
+            
+            if use_shallow:
+                # Shallow clone with minimal history
+                clone_args['depth'] = self.shallow_depth
+                clone_args['single_branch'] = True  # Only clone specified branch
+                logger.info(f"Using shallow clone with depth {self.shallow_depth} for {repo_url}")
+            else:
+                # Full clone for smaller repos
+                clone_args['no_single_branch'] = True  # Clone all branches
+            
+            git.Repo.clone_from(**clone_args)
+            
             # Record fetch time for new clone
             self._last_fetch[repo_url] = datetime.now()
             logger.info(f"Cloned repository to cache: {repo_path}")
@@ -285,3 +320,175 @@ class GitCacheManager:
                 self.get_available_tags(repo_url)
             except Exception as e:
                 logger.error(f"Failed to pre-warm cache for {repo_url}: {e}")
+    
+    def optimize_repo(self, repo_url: str) -> int:
+        """Optimize a cached repository using git gc and prune"""
+        repo_path = self.get_cached_repo_path(repo_url)
+        
+        if not repo_path.exists():
+            logger.warning(f"Repository not in cache: {repo_url}")
+            return 0
+        
+        try:
+            repo = git.Repo(repo_path)
+            size_before = self._get_repo_size(repo_path)
+            
+            # Run git garbage collection
+            logger.info(f"Running git gc on {repo_url}")
+            repo.git.gc('--aggressive', '--prune=now')
+            
+            # Prune unreachable objects
+            repo.git.prune()
+            
+            # Remove reflogs older than 1 day
+            repo.git.reflog('expire', '--expire=1.day.ago', '--all')
+            
+            size_after = self._get_repo_size(repo_path)
+            saved = size_before - size_after
+            
+            logger.info(f"Optimized {repo_url}: saved {saved / (1024*1024):.2f} MB")
+            return saved
+            
+        except Exception as e:
+            logger.error(f"Failed to optimize {repo_url}: {e}")
+            return 0
+    
+    def _get_repo_size(self, repo_path: Path) -> int:
+        """Get size of a repository in bytes"""
+        total_size = 0
+        for dirpath, _, filenames in os.walk(repo_path):
+            for filename in filenames:
+                filepath = os.path.join(dirpath, filename)
+                total_size += os.path.getsize(filepath)
+        return total_size
+    
+    def cleanup_old_repos(self, max_age_days: int = 30) -> int:
+        """Remove cached repositories not accessed in max_age_days"""
+        if not self.cache_path.exists():
+            return 0
+        
+        current_time = time.time()
+        max_age_seconds = max_age_days * 24 * 60 * 60
+        total_removed = 0
+        
+        for repo_dir in self.cache_path.iterdir():
+            if not repo_dir.is_dir():
+                continue
+                
+            # Check last access time
+            last_access = os.path.getatime(repo_dir)
+            age_seconds = current_time - last_access
+            
+            if age_seconds > max_age_seconds:
+                try:
+                    size = self._get_repo_size(repo_dir)
+                    shutil.rmtree(repo_dir)
+                    total_removed += size
+                    logger.info(f"Removed old cached repo: {repo_dir.name} (freed {size/(1024*1024):.2f} MB)")
+                except Exception as e:
+                    logger.error(f"Failed to remove {repo_dir}: {e}")
+        
+        if total_removed > 0:
+            logger.info(f"Total space freed: {total_removed/(1024*1024):.2f} MB")
+        
+        return total_removed
+    
+    def convert_to_shallow(self, repo_url: str, depth: int = 1) -> bool:
+        """Convert an existing full clone to shallow clone"""
+        repo_path = self.get_cached_repo_path(repo_url)
+        
+        if not repo_path.exists():
+            logger.warning(f"Repository not in cache: {repo_url}")
+            return False
+        
+        try:
+            repo = git.Repo(repo_path)
+            current_branch = repo.active_branch.name
+            
+            size_before = self._get_repo_size(repo_path)
+            
+            # Re-clone as shallow
+            logger.info(f"Converting {repo_url} to shallow clone with depth {depth}")
+            
+            # Save the remote URL
+            remote_url = repo.remotes.origin.url
+            
+            # Remove the old repo
+            shutil.rmtree(repo_path)
+            
+            # Clone as shallow
+            git.Repo.clone_from(
+                remote_url,
+                repo_path,
+                branch=current_branch,
+                depth=depth,
+                single_branch=True
+            )
+            
+            size_after = self._get_repo_size(repo_path)
+            saved = size_before - size_after
+            
+            logger.info(f"Converted to shallow clone: saved {saved/(1024*1024):.2f} MB")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to convert to shallow: {e}")
+            return False
+    
+    def get_repository_stats(self) -> Dict:
+        """Get detailed statistics about cached repositories"""
+        stats = {
+            'total_size': 0,
+            'repo_count': 0,
+            'repos': [],
+            'largest_repos': [],
+            'optimization_potential': 0
+        }
+        
+        if not self.cache_path.exists():
+            return stats
+        
+        repo_sizes = []
+        
+        for repo_dir in self.cache_path.iterdir():
+            if not repo_dir.is_dir() or not (repo_dir / '.git').exists():
+                continue
+                
+            try:
+                repo = git.Repo(repo_dir)
+                origin_url = repo.remotes.origin.url if repo.remotes else 'Unknown'
+                repo_size = self._get_repo_size(repo_dir)
+                
+                # Check if it's a shallow clone
+                is_shallow = repo.git.rev_parse('--is-shallow-repository') == 'true'
+                
+                repo_info = {
+                    'name': repo_dir.name,
+                    'url': origin_url,
+                    'size': repo_size,
+                    'size_mb': repo_size / (1024 * 1024),
+                    'is_shallow': is_shallow,
+                    'last_accessed': datetime.fromtimestamp(os.path.getatime(repo_dir))
+                }
+                
+                stats['repos'].append(repo_info)
+                repo_sizes.append((repo_info['size_mb'], repo_info))
+                stats['total_size'] += repo_size
+                
+                # Estimate optimization potential for non-shallow large repos
+                if not is_shallow and repo_size > 100 * 1024 * 1024:  # > 100MB
+                    # Shallow clones can save 80-90% of space for large repos
+                    stats['optimization_potential'] += int(repo_size * 0.85)
+                    
+            except Exception as e:
+                logger.error(f"Failed to get stats for {repo_dir}: {e}")
+        
+        stats['repo_count'] = len(stats['repos'])
+        stats['total_size_mb'] = stats['total_size'] / (1024 * 1024)
+        stats['optimization_potential_mb'] = stats['optimization_potential'] / (1024 * 1024)
+        
+        # Get top 5 largest repos
+        repo_sizes.sort(reverse=True)
+        stats['largest_repos'] = [info for _, info in repo_sizes[:5]]
+        
+        return stats

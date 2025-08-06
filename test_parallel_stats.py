@@ -6,10 +6,10 @@ import time
 import sys
 from pathlib import Path
 
-# Add src to path
-sys.path.append(str(Path(__file__).parent / 'src'))
+# Add current directory to path and import src modules
+sys.path.insert(0, str(Path(__file__).parent))
 
-from docker_handler import DockerComposeHandler
+from src.docker_handler import DockerComposeHandler
 
 def test_parallel_stats():
     """Test if parallelized stats collection is working"""
