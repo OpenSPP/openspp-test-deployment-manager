@@ -202,7 +202,8 @@ def show_deployment_card(deployment, col_actions):
         
         with action_cols[1]:
             if st.button("📋", key=f"logs_{deployment.id}", help="Logs"):
-                st.session_state.show_logs = deployment.id
+                st.session_state.manage_deployment = deployment.id
+                st.session_state.show_logs_tab = True
         
         with action_cols[2]:
             if st.button("⚙️", key=f"manage_{deployment.id}", help="Manage"):
@@ -210,7 +211,6 @@ def show_deployment_card(deployment, col_actions):
         
         with action_cols[3]:
             if st.button("🗑️", key=f"delete_{deployment.id}", help="Delete"):
-                performance_tracker.track_event(f"Delete button clicked for {deployment.id}")
                 st.session_state.confirm_delete = deployment.id
     
     # Show tester notes if any
@@ -254,12 +254,22 @@ def show_create_deployment_form():
             # Fetch available versions
             versions = manager.config.available_openspp_versions
             if not versions:
-                versions = ["openspp-17.0.1.2.1", "openspp-17.0.1.2.0"]
+                st.error("Unable to fetch OpenSPP versions. Please check your internet connection.")
+                if st.button("🔄 Retry Fetch", key="retry_versions"):
+                    manager._refresh_available_versions()
+                    st.rerun()
+                st.stop()
+            
+            # Default to "17.0" branch if available, otherwise use first version
+            default_index = 0
+            if "17.0" in versions:
+                default_index = versions.index("17.0")
             
             openspp_version = st.selectbox(
                 "OpenSPP Version",
                 versions,
-                help="Select OpenSPP version to deploy"
+                index=default_index,
+                help="Select OpenSPP version to deploy (branch or tag)"
             )
             
             notes = st.text_area(
@@ -275,6 +285,9 @@ def show_create_deployment_form():
         with st.expander("🔧 Advanced Options (Optional)", expanded=True):
             st.markdown("**Override Dependency Versions**")
             st.info("Leave blank to use defaults from selected OpenSPP version. Refresh the page to reload dependencies.")
+            st.markdown("🔀 **Organization Selection**: For OpenG2P modules, you can choose between:\n"
+                       "- **OpenSPP/** versions - OpenSPP's fork with customizations\n"
+                       "- **OpenG2P/** versions - Original OpenG2P repositories")
             
             # Get all available dependencies with caching
             if 'available_deps' not in st.session_state:
@@ -297,13 +310,24 @@ def show_create_deployment_form():
                     # Show OpenG2P dependencies first
                     if openg2p_deps:
                         st.markdown("**OpenG2P Dependencies**")
+                        st.info("💡 Select versions from either OpenSPP fork or original OpenG2P repos")
                         for dep in sorted(openg2p_deps):
                             versions = available_deps[dep]
                             if versions:
+                                # Separate versions by organization (already sorted by recency from backend)
+                                openspp_versions = [v for v in versions if v.startswith("OpenSPP/")]
+                                openg2p_versions = [v for v in versions if v.startswith("OpenG2P/")]
+                                other_versions = [v for v in versions if not v.startswith(("OpenSPP/", "OpenG2P/"))]
+                                
+                                # Show all versions, grouped by organization
+                                organized_versions = openspp_versions + openg2p_versions + other_versions
+                                display_help = f"OpenSPP/* = Fork ({len(openspp_versions)} versions), OpenG2P/* = Original ({len(openg2p_versions)} versions)"
+                                
                                 selected = st.selectbox(
                                     f"{dep}",
-                                    ["(default)"] + versions[:20],  # Limit to 20 versions
-                                    key=f"dep_{dep}"
+                                    ["(default)"] + organized_versions,
+                                    key=f"dep_{dep}",
+                                    help=display_help
                                 )
                                 if selected != "(default)":
                                     dependencies[dep] = selected
@@ -314,10 +338,14 @@ def show_create_deployment_form():
                         for dep in sorted(other_deps):
                             versions = available_deps[dep]
                             if versions:
+                                # Show all versions for consistency
+                                help_text = f"{len(versions)} versions available"
+                                
                                 selected = st.selectbox(
                                     f"{dep}",
-                                    ["(default)"] + versions[:20],  # Limit to 20 versions
-                                    key=f"dep_{dep}"
+                                    ["(default)"] + versions,
+                                    key=f"dep_{dep}",
+                                    help=help_text
                                 )
                                 if selected != "(default)":
                                     dependencies[dep] = selected
@@ -452,137 +480,140 @@ def show_deployment_management(deployment_id):
     
     st.divider()
     
-    # Task execution
-    st.markdown("### 🛠️ Execute Tasks")
+    # Create tabs for different management sections
+    # Check if we should highlight logs
+    show_logs_hint = st.session_state.get("show_logs_tab", False)
     
-    task_name = st.selectbox(
-        "Select Task",
-        list(ALLOWED_INVOKE_TASKS.keys()),
-        format_func=lambda x: f"{ALLOWED_INVOKE_TASKS[x]['icon']} {x} - {ALLOWED_INVOKE_TASKS[x]['description']}"
-    )
+    # Create tabs
+    tab1, tab2, tab3 = st.tabs(["🛠️ Execute Tasks", "📋 Logs", "🔧 Debug Logs"])
     
-    task_info = ALLOWED_INVOKE_TASKS[task_name]
+    # Show hint if logs button was clicked
+    if show_logs_hint:
+        st.success("💡 Click on the **📋 Logs** tab above to view deployment logs")
+        # Clear the flag after showing the message
+        if "show_logs_tab" in st.session_state:
+            del st.session_state.show_logs_tab
     
-    # Dynamic parameter inputs
-    params = {}
-    if task_info["params"]:
-        st.markdown("**Parameters:**")
-        for param in task_info["params"]:
-            if param == "modules":
-                value = st.text_input(
-                    "Modules (comma-separated)",
-                    placeholder="e.g., spp_programs,spp_registry_group",
-                    key=f"param_{param}"
-                )
-                if value:
-                    params[param] = value
-            elif param == "tail":
-                value = st.number_input(
-                    "Number of lines",
-                    min_value=10,
-                    max_value=1000,
-                    value=100,
-                    key=f"param_{param}"
-                )
-                params[param] = str(value)
-            elif param == "container":
-                containers = ["odoo", "db", "smtp", "pgweb"]
-                value = st.selectbox("Container", containers, key=f"param_{param}")
-                params[param] = value
-            elif param == "snapshot-name":
-                value = st.text_input("Snapshot name", key=f"param_{param}")
-                if value:
-                    params[param] = value
-            elif param == "quick":
-                value = st.checkbox("Quick restart", key=f"param_{param}")
-                if value:
-                    params[param] = "true"
-    
-    col1, col2 = st.columns([1, 4])
-    with col1:
-        if st.button(f"Execute {task_name}", type="primary"):
-            with st.spinner(f"Executing {task_name}..."):
-                result = manager.execute_task(deployment_id, task_name, params)
-            
-            if result.success:
-                st.success(f"Task completed in {result.execution_time:.1f}s")
-                if result.output:
-                    st.code(result.output, language="log")
-            else:
-                st.error("Task failed")
-                if result.error:
-                    st.code(result.error, language="log")
-    
-    st.divider()
-    
-    # Recent logs
-    st.markdown("### 📋 Recent Logs")
-    
-    col1, col2, col3 = st.columns([2, 2, 1])
-    with col1:
-        log_service = st.selectbox(
-            "Service",
-            ["all", "odoo", "db", "smtp"],
-            key="log_service"
+    with tab1:
+        # Task execution
+        st.markdown("### Execute Tasks")
+        
+        task_name = st.selectbox(
+            "Select Task",
+            list(ALLOWED_INVOKE_TASKS.keys()),
+            format_func=lambda x: f"{ALLOWED_INVOKE_TASKS[x]['icon']} {x} - {ALLOWED_INVOKE_TASKS[x]['description']}"
         )
-    with col2:
-        log_lines = st.slider(
-            "Number of lines",
-            min_value=50,
-            max_value=500,
-            value=100,
-            step=50,
-            key="log_lines"
-        )
-    with col3:
-        if st.button("🔄 Refresh Logs"):
-            service = None if log_service == "all" else log_service
-            logs = manager.get_deployment_logs(deployment_id, service=service, tail=log_lines)
-            st.code(logs, language="log")
     
-    # Auto-load logs on first view
-    if "logs_loaded" not in st.session_state:
+        task_info = ALLOWED_INVOKE_TASKS[task_name]
+        
+        # Dynamic parameter inputs
+        params = {}
+        if task_info["params"]:
+            st.markdown("**Parameters:**")
+            for param in task_info["params"]:
+                if param == "modules":
+                    value = st.text_input(
+                        "Modules (comma-separated)",
+                        placeholder="e.g., spp_programs,spp_registry_group",
+                        key=f"param_{param}"
+                    )
+                    if value:
+                        params[param] = value
+                elif param == "tail":
+                    value = st.number_input(
+                        "Number of lines",
+                        min_value=10,
+                        max_value=1000,
+                        value=100,
+                        key=f"param_{param}"
+                    )
+                    params[param] = str(value)
+                elif param == "container":
+                    containers = ["odoo", "db", "smtp", "pgweb"]
+                    value = st.selectbox("Container", containers, key=f"param_{param}")
+                    params[param] = value
+                elif param == "snapshot-name":
+                    value = st.text_input("Snapshot name", key=f"param_{param}")
+                    if value:
+                        params[param] = value
+                elif param == "quick":
+                    value = st.checkbox("Quick restart", key=f"param_{param}")
+                    if value:
+                        params[param] = "true"
+        
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            if st.button(f"Execute {task_name}", type="primary"):
+                with st.spinner(f"Executing {task_name}..."):
+                    result = manager.execute_task(deployment_id, task_name, params)
+                
+                if result.success:
+                    st.success(f"Task completed in {result.execution_time:.1f}s")
+                    if result.output:
+                        st.code(result.output, language="log")
+                else:
+                    st.error("Task failed")
+                    if result.error:
+                        st.code(result.error, language="log")
+    
+    with tab2:
+        # Recent logs
+        st.markdown("### 📋 Recent Logs")
+        
+        col1, col2, col3 = st.columns([2, 2, 1])
+        with col1:
+            log_service = st.selectbox(
+                "Service",
+                ["all", "odoo", "db", "smtp"],
+                key="log_service"
+            )
+        with col2:
+            log_lines = st.slider(
+                "Number of lines",
+                min_value=50,
+                max_value=500,
+                value=100,
+                step=50,
+                key="log_lines"
+            )
+        with col3:
+            if st.button("🔄 Refresh Logs"):
+                service = None if log_service == "all" else log_service
+                logs = manager.get_deployment_logs(deployment_id, service=service, tail=log_lines)
+                st.code(logs, language="log")
+        
+        # Auto-load logs
         service = None if log_service == "all" else log_service
         logs = manager.get_deployment_logs(deployment_id, service=service, tail=log_lines)
         st.code(logs, language="log")
-        st.session_state.logs_loaded = True
     
-    st.divider()
-    
-    # Command logs for debugging
-    st.markdown("### 🔧 Command Logs (Debugging)")
-    st.info("View detailed command execution logs for troubleshooting deployment issues")
-    
-    # Create tabs for different log types
-    log_tab1, log_tab2 = st.tabs(["📋 Detailed Logs", "⏱️ Debug & Timing"])
-    
-    with log_tab1:
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            log_date = st.text_input(
-                "Log Date (YYYYMMDD)", 
-                placeholder=f"e.g., {time.strftime('%Y%m%d')}",
-                help="Leave empty for today's logs",
-                key="detailed_log_date"
-            )
-        with col2:
-            if st.button("📥 View Detailed Logs"):
-                cmd_logs = manager.get_deployment_command_logs(deployment_id, date=log_date if log_date else None)
-                st.code(cmd_logs, language="log")
-    
-    with log_tab2:
+    with tab3:
+        # Command logs for debugging
+        st.markdown("### 🔧 Command Logs (Debugging)")
+        st.info("View detailed command execution logs for troubleshooting deployment issues")
+        
         col1, col2 = st.columns([3, 1])
         with col1:
             debug_log_date = st.text_input(
-                "Debug Log Date (YYYYMMDD)", 
+                "Log Date (YYYYMMDD)", 
                 placeholder=f"e.g., {time.strftime('%Y%m%d')}",
-                help="Leave empty for today's debug logs",
+                help="Leave empty for today's logs",
                 key="debug_log_date"
             )
         with col2:
-            if st.button("⏱️ View Debug & Timing Logs"):
-                debug_logs = manager.get_deployment_debug_logs(deployment_id, date=debug_log_date if debug_log_date else None)
-                st.code(debug_logs, language="log")
+            debug_type = st.radio(
+                "Log Type",
+                ["Detailed", "Debug & Timing"],
+                key="debug_type"
+            )
+            
+            if st.button("📥 View Logs"):
+                if debug_type == "Detailed":
+                    cmd_logs = manager.get_deployment_command_logs(deployment_id, date=debug_log_date if debug_log_date else None)
+                    st.code(cmd_logs, language="log")
+                else:
+                    debug_logs = manager.get_deployment_debug_logs(deployment_id, date=debug_log_date if debug_log_date else None)
+                    st.code(debug_logs, language="log")
         
         st.info("💡 Debug logs show command execution times and quick summaries - great for performance analysis!")
 
@@ -687,7 +718,6 @@ def main():
         show_deployment_management(st.session_state.manage_deployment)
         if st.button("← Back to Dashboard"):
             st.session_state.manage_deployment = None
-            st.session_state.logs_loaded = False
             st.rerun()
         return
     

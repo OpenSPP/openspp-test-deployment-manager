@@ -642,14 +642,38 @@ class DeploymentManager:
             # Update dependency versions if specified
             for dep, version in deployment.dependency_versions.items():
                 if dep in repos and version:
-                    # Get the remote name from the current configuration
-                    remote_name = 'origin'
-                    if 'remotes' in repos[dep]:
-                        remote_name = list(repos[dep]['remotes'].keys())[0]
-                    
-                    # Update both target and merges
-                    repos[dep]['target'] = f"{remote_name} {version}"
-                    repos[dep]['merges'] = [f"{remote_name} {version}"]
+                    # Handle organization prefix for OpenG2P repos
+                    if '/' in version and dep.startswith('openg2p_'):
+                        # Parse organization and version
+                        org_prefix, actual_version = version.split('/', 1)
+                        
+                        # Update remote URL based on organization
+                        if 'remotes' in repos[dep]:
+                            current_remote = list(repos[dep]['remotes'].keys())[0]
+                            current_url = repos[dep]['remotes'][current_remote]
+                            
+                            if org_prefix == 'OpenG2P':
+                                # Use original OpenG2P repo
+                                new_url = current_url.replace('OpenSPP', 'openg2p')
+                            else:
+                                # Use OpenSPP fork
+                                new_url = current_url.replace('openg2p', 'OpenSPP')
+                            
+                            repos[dep]['remotes'][current_remote] = new_url
+                        
+                        # Update target and merges with actual version (without prefix)
+                        remote_name = list(repos[dep]['remotes'].keys())[0] if 'remotes' in repos[dep] else 'origin'
+                        repos[dep]['target'] = f"{remote_name} {actual_version}"
+                        repos[dep]['merges'] = [f"{remote_name} {actual_version}"]
+                    else:
+                        # Non-OpenG2P repos or no prefix - handle normally
+                        remote_name = 'origin'
+                        if 'remotes' in repos[dep]:
+                            remote_name = list(repos[dep]['remotes'].keys())[0]
+                        
+                        # Update both target and merges
+                        repos[dep]['target'] = f"{remote_name} {version}"
+                        repos[dep]['merges'] = [f"{remote_name} {version}"]
             
             return write_yaml_file(str(repos_yaml_path), repos)
             
@@ -879,18 +903,13 @@ class DeploymentManager:
                 # Use git cache for faster access
                 repo_url = "https://github.com/openspp/openspp-modules.git"
                 
-                # Get branches
+                # Get ALL branches
                 branches = self.git_cache.get_available_branches(repo_url)
-                # Filter relevant branches
-                for branch in branches:
-                    if branch.startswith('17.0') or branch == 'main' or branch == 'master':
-                        versions.append(branch)
+                versions.extend(branches)  # Add all branches
                 
-                # Get tags
+                # Get ALL tags
                 tags = self.git_cache.get_available_tags(repo_url)
-                for tag in tags:
-                    if tag.startswith('openspp-'):
-                        versions.append(tag)
+                versions.extend(tags)  # Add all tags
             else:
                 # Fallback to direct git commands
                 # Get branches
@@ -903,8 +922,8 @@ class DeploymentManager:
                     for line in result.stdout.strip().split('\n'):
                         if 'refs/heads/' in line:
                             branch = line.split('refs/heads/')[-1]
-                            if branch.startswith('17.0') or branch == 'main' or branch == 'master':
-                                versions.append(branch)
+                            # Include all branches, not just specific ones
+                            versions.append(branch)
                 
                 # Get tags
                 result = run_command_with_retry([
@@ -916,64 +935,124 @@ class DeploymentManager:
                     for line in result.stdout.strip().split('\n'):
                         if 'refs/tags/' in line and '^{}' not in line:
                             tag = line.split('refs/tags/')[-1]
-                            if tag.startswith('openspp-'):
-                                versions.append(tag)
+                            # Include ALL tags
+                            versions.append(tag)
             
-            # Remove duplicates and sort
-            self.config.available_openspp_versions = sorted(list(set(versions)), reverse=True)
+            # Remove duplicates
+            unique_versions = list(set(versions))
+            
+            # Separate into categories
+            branch_17 = ["17.0"] if "17.0" in unique_versions else []
+            
+            # Identify tags vs branches - tags typically have version numbers or specific prefixes
+            def is_likely_tag(version):
+                # Tags often start with v followed by version numbers
+                import re
+                return (
+                    version.startswith("v") or  # Most tags start with v
+                    version.startswith("openspp-") or  # In case there are any openspp- tags
+                    (re.search(r'\d+\.\d+\.\d+', version) and not version in ["15.0", "17.0"])  # Has semantic version but not branch names
+                )
+            
+            tags = sorted([v for v in unique_versions if is_likely_tag(v) and v != "17.0"], reverse=True)
+            other_branches = sorted([v for v in unique_versions 
+                                   if v not in branch_17 + tags])
+            
+            # Combine in priority order: 17.0 first, then tags (newest first), then other branches
+            self.config.available_openspp_versions = branch_17 + tags + other_branches
             logger.info(f"Found {len(self.config.available_openspp_versions)} OpenSPP versions")
+            logger.debug(f"Branches: {other_branches[:10]}")  # Log first 10 branches
+            logger.debug(f"Tags: {tags[:10]}")  # Log first 10 tags
             
         except Exception as e:
             logger.error(f"Failed to fetch OpenSPP versions: {e}")
-            # Set some default versions
-            self.config.available_openspp_versions = [
-                "17.0",
-                "openspp-17.0.1.2.1",
-                "openspp-17.0.1.2.0",
-                "openspp-17.0.1.1.0"
-            ]
+            # Leave empty if fetch fails - UI will handle this
+            self.config.available_openspp_versions = []
     
     def get_available_dependency_branches(self, repo_name: str) -> List[str]:
-        """Get available branches for a dependency"""
-        repo_urls = {
-            "openg2p_registry": "https://github.com/openg2p/openg2p-registry.git",
-            "openg2p_program": "https://github.com/openg2p/openg2p-program.git"
-        }
+        """Get available branches for a dependency from both OpenSPP and OpenG2P repos"""
+        branches = []
         
-        repo_url = repo_urls.get(repo_name)
-        if not repo_url:
+        # Define both OpenSPP fork and original OpenG2P URLs
+        if repo_name.startswith('openg2p_'):
+            repo_urls = {
+                "OpenSPP": f"https://github.com/OpenSPP/{repo_name.replace('_', '-')}.git",
+                "OpenG2P": f"https://github.com/openg2p/{repo_name.replace('_', '-')}.git"
+            }
+        else:
+            # Non-OpenG2P repo
             return []
         
-        try:
-            result = run_command_with_retry([
-                "git", "ls-remote", "--heads", repo_url
-            ])
-            
-            if result.returncode == 0:
-                branches = []
-                for line in result.stdout.strip().split('\n'):
-                    if 'refs/heads/' in line:
-                        branch = line.split('refs/heads/')[-1]
-                        if 'openspp' in branch or 'develop' in branch:
-                            branches.append(branch)
+        for org, repo_url in repo_urls.items():
+            try:
+                result = run_command_with_retry([
+                    "git", "ls-remote", "--heads", repo_url
+                ])
                 
-                return sorted(branches)
+                if result.returncode == 0:
+                    for line in result.stdout.strip().split('\n'):
+                        if 'refs/heads/' in line:
+                            branch = line.split('refs/heads/')[-1]
+                            # Add with organization prefix
+                            branches.append(f"{org}/{branch}")
                 
-        except Exception as e:
-            logger.error(f"Failed to fetch branches for {repo_name}: {e}")
-            
-        return []
+                # Also get tags
+                result = run_command_with_retry([
+                    "git", "ls-remote", "--tags", repo_url
+                ])
+                
+                if result.returncode == 0:
+                    for line in result.stdout.strip().split('\n'):
+                        if 'refs/tags/' in line and '^{}' not in line:
+                            tag = line.split('refs/tags/')[-1]
+                            branches.append(f"{org}/{tag}")
+                            
+            except Exception as e:
+                logger.debug(f"Failed to fetch branches for {repo_name} from {org}: {e}")
+        
+        return sorted(branches)
     
     def _get_single_repo_versions(self, repo_info: Tuple[str, str]) -> Tuple[str, List[str]]:
         """Get versions for a single repository - helper for parallel processing"""
         repo_name, remote_url = repo_info
         
         try:
+            versions = []
+            
             if self.git_cache:
                 # Get branches and tags from cache
                 branches = self.git_cache.get_available_branches(remote_url)
                 tags = self.git_cache.get_available_tags(remote_url)
-                return repo_name, branches + tags
+                
+                # For OpenG2P repos, also fetch from the original OpenG2P organization
+                if repo_name.startswith('openg2p_') and 'OpenSPP' in remote_url:
+                    # Sort to put more recent versions first (reverse alphabetical often correlates with recency)
+                    sorted_branches = sorted(branches, reverse=True)
+                    sorted_tags = sorted(tags, reverse=True)
+                    
+                    # Add OpenSPP versions with prefix
+                    for v in sorted_branches + sorted_tags:
+                        versions.append(f"OpenSPP/{v}")
+                    
+                    # Also fetch from original OpenG2P repo
+                    original_url = remote_url.replace('OpenSPP', 'openg2p')
+                    try:
+                        g2p_branches = self.git_cache.get_available_branches(original_url)
+                        g2p_tags = self.git_cache.get_available_tags(original_url)
+                        
+                        # Sort OpenG2P versions too
+                        sorted_g2p_branches = sorted(g2p_branches, reverse=True)
+                        sorted_g2p_tags = sorted(g2p_tags, reverse=True)
+                        
+                        for v in sorted_g2p_branches + sorted_g2p_tags:
+                            versions.append(f"OpenG2P/{v}")
+                    except Exception as e:
+                        logger.debug(f"Could not fetch from OpenG2P repo for {repo_name}: {e}")
+                else:
+                    # Non-OpenG2P repos - no prefix needed
+                    versions = sorted(branches, reverse=True) + sorted(tags, reverse=True)
+                
+                return repo_name, versions
             else:
                 # No cache available
                 return repo_name, []
@@ -1051,10 +1130,14 @@ class DeploymentManager:
                                     logger.debug(f"Failed to get versions for {repo_name}: {e}")
                                     dependencies[repo_name] = []
                 else:
-                    # No cache or no repos - just add empty lists
+                    # No cache - use fallback method for OpenG2P repos
                     for repo_name, repo_config in repos.items():
                         if repo_name != './odoo' and 'remotes' in repo_config:
-                            dependencies[repo_name] = []
+                            if repo_name.startswith('openg2p_'):
+                                # Use the fallback method that fetches from both orgs
+                                dependencies[repo_name] = self.get_available_dependency_branches(repo_name)
+                            else:
+                                dependencies[repo_name] = []
                 
                 # Clean up temp dir if created
                 if not self.git_cache and 'temp_dir' in locals():
