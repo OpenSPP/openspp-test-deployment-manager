@@ -462,13 +462,17 @@ def show_deployment_management(deployment_id):
     config = load_config()
     if config.nginx_enabled:
         odoo_url = f"http://{deployment.subdomain}"
+        mailhog_url = f"http://mailhog-{deployment.subdomain}"
+        pgweb_url = f"http://pgweb-{deployment.subdomain}"
     else:
         odoo_url = f"http://localhost:{deployment.port_base}"
+        mailhog_url = f"http://localhost:{deployment.port_mappings.get('smtp', deployment.port_base + 25)}"
+        pgweb_url = f"http://localhost:{deployment.port_mappings.get('pgweb', deployment.port_base + 81)}"
     
     urls = {
         "Odoo": odoo_url,
-        "Mailhog": f"http://localhost:{deployment.port_mappings.get('smtp', deployment.port_base + 25)}",
-        "PGWeb": f"http://localhost:{deployment.port_mappings.get('pgweb', deployment.port_base + 81)}"
+        "Mailhog": mailhog_url,
+        "PGWeb": pgweb_url
     }
     
     for service, url in urls.items():
