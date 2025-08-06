@@ -448,7 +448,7 @@ class DeploymentManager:
             # Remove nginx config
             if self.config.nginx_enabled:
                 with performance_tracker.track_operation(f"Remove nginx config {deployment_id}", show_progress=False):
-                    self.domain_manager.remove_deployment_domain(deployment)
+                    self.domain_manager.cleanup_deployment_domain(deployment.id)
             
             # Remove deployment directory
             with performance_tracker.track_operation(f"Remove deployment directory {deployment_id}", show_progress=False):
@@ -889,7 +889,7 @@ class DeploymentManager:
         
         # Remove nginx config
         if self.config.nginx_enabled:
-            self.domain_manager.remove_deployment_domain(deployment)
+            self.domain_manager.cleanup_deployment_domain(deployment.id)
         
         # Free port allocation
         self.db.delete_deployment(deployment.id)
