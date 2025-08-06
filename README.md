@@ -5,6 +5,8 @@ A web-based tool to manage multiple OpenSPP Docker test deployments, allowing te
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![Streamlit](https://img.shields.io/badge/streamlit-1.29%2B-red)
 ![Docker](https://img.shields.io/badge/docker-required-blue)
+![License](https://img.shields.io/badge/license-Apache%202.0-green)
+[![Tests](https://github.com/OpenSPP/openspp-deployment-manager/actions/workflows/test.yml/badge.svg)](https://github.com/OpenSPP/openspp-deployment-manager/actions/workflows/test.yml)
 
 ## ⚠️ SECURITY WARNING
 **This application has NO AUTHENTICATION and should NEVER be exposed to the public internet!**
@@ -41,7 +43,7 @@ For production use, ensure this application is only accessible through:
 ## Quick Start
 ### 1. Clone the Repository
 ```bash
-git clone <repository-url> openspp-deployment-manager
+git clone https://github.com/OpenSPP/openspp-deployment-manager.git
 cd openspp-deployment-manager
 ```
 
@@ -328,15 +330,38 @@ SQLite tables:
 3. Monitor access logs regularly
 4. Consider adding a reverse proxy with authentication if broader access is needed
 5. Regularly audit deployed instances and remove unused ones
+## Testing
+
+The project includes a comprehensive test suite:
+
+```bash
+# Run all tests
+uv run pytest
+
+# Run with coverage
+uv run pytest --cov=src --cov-report=html
+
+# Run specific test file
+uv run pytest tests/test_deployment_manager.py -v
+```
+
 ## Contributing
-1. Fork the repository
-2. Create feature branch
-3. Make changes with tests
-4. Submit pull request
+
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on:
+- Development setup
+- Code style and standards
+- Testing requirements
+- Pull request process
+- Security considerations
+
 ## License
-[License information here]
+
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+
 ## Support
+
 For issues and questions:
-- Check troubleshooting guide above
+- Check the troubleshooting guide above
 - Review logs in `logs/` directory
-- Open GitHub issue with details
+- Open a [GitHub issue](https://github.com/OpenSPP/openspp-deployment-manager/issues) with details
+- For OpenSPP-specific questions, visit [OpenSPP documentation](https://docs.openspp.org)
