@@ -81,8 +81,10 @@ class GitCacheManager:
                         # Only fetch the specific branch with limited depth
                         repo.git.fetch('origin', branch, '--depth', str(self.shallow_depth))
                     else:
-                        # Fetch with limited depth
-                        repo.git.fetch('--depth', str(self.shallow_depth), '--tags')
+                        # Fetch with limited depth but ensure we get all tags
+                        repo.git.fetch('--depth', str(self.shallow_depth))
+                        # Separately fetch all tags (lightweight, just refs)
+                        repo.git.fetch('--tags', '--force')
                 else:
                     # Full fetch for non-shallow repos
                     repo.git.fetch('--all', '--tags')
@@ -123,13 +125,21 @@ class GitCacheManager:
             if use_shallow:
                 # Shallow clone with minimal history
                 clone_args['depth'] = self.shallow_depth
-                clone_args['single_branch'] = True  # Only clone specified branch
+                if branch:
+                    clone_args['single_branch'] = True  # Only clone specified branch if requested
                 logger.info(f"Using shallow clone with depth {self.shallow_depth} for {repo_url}")
             else:
                 # Full clone for smaller repos
                 clone_args['no_single_branch'] = True  # Clone all branches
             
-            git.Repo.clone_from(**clone_args)
+            repo = git.Repo.clone_from(**clone_args)
+            
+            # After cloning, ensure we have all tags
+            try:
+                repo.git.fetch('--tags', '--force')
+                logger.info(f"Fetched all tags for {repo_url}")
+            except Exception as e:
+                logger.warning(f"Failed to fetch tags after clone: {e}")
             
             # Record fetch time for new clone
             self._last_fetch[repo_url] = datetime.now()
@@ -244,7 +254,8 @@ class GitCacheManager:
             
             # Only fetch if needed
             if self._should_fetch(repo_url):
-                repo.git.fetch('--tags')
+                # Fetch all tags, not just shallow
+                repo.git.fetch('--tags', '--force')
                 self._last_fetch[repo_url] = datetime.now()
             
             tags = [tag.name for tag in repo.tags]
