@@ -29,8 +29,8 @@ ports:
     debugger: 84 # base + 84
     
 domain:
-  base: "localhost"  # Changed for Mac - no subdomain routing
-  ssl: false
+  base: "test.openspp.org"  # For external access via NPM
+  ssl: false  # SSL handled by NPM proxy
   
 monitoring:
   status_check_interval: 60  # seconds
@@ -41,6 +41,7 @@ cleanup:
   stopped_deployment_days: 7
   orphaned_check_interval: 3600  # seconds
   
-# Mac-specific settings
+# Enable nginx for subdomain routing
 nginx:
-  enabled: false  # Disable Nginx features on Mac
+  enabled: true
+  config_path: "/etc/nginx/sites-available"
