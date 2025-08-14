@@ -200,7 +200,7 @@ class GitCacheManager:
     def get_available_branches(self, repo_url: str) -> List[str]:
         """Get list of available branches from cached repo"""
         # Check in-memory cache first
-        if self._is_cache_valid(repo_url):
+        if self._is_cache_valid(repo_url) and 'branches' in self._branch_cache.get(repo_url, {}):
             return self._branch_cache[repo_url].get('branches', [])
         
         repo_path = self.get_cached_repo_path(repo_url)
@@ -240,7 +240,7 @@ class GitCacheManager:
     def get_available_tags(self, repo_url: str) -> List[str]:
         """Get list of available tags from cached repo"""
         # Check in-memory cache first
-        if self._is_cache_valid(repo_url):
+        if self._is_cache_valid(repo_url) and 'tags' in self._branch_cache.get(repo_url, {}):
             return self._branch_cache[repo_url].get('tags', [])
         
         repo_path = self.get_cached_repo_path(repo_url)
