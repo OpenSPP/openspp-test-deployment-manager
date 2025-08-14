@@ -915,18 +915,24 @@ class DeploymentManager:
         try:
             versions = []
             
+            logger.info(f"Git cache enabled: {self.config.git_cache_enabled}")
+            logger.info(f"Git cache object: {self.git_cache is not None}")
+            
             if self.git_cache:
                 # Use git cache for faster access
                 repo_url = "https://github.com/openspp/openspp-modules.git"
                 
                 # Get ALL branches
                 branches = self.git_cache.get_available_branches(repo_url)
+                logger.info(f"Git cache found {len(branches)} branches")
                 versions.extend(branches)  # Add all branches
                 
                 # Get ALL tags
                 tags = self.git_cache.get_available_tags(repo_url)
+                logger.info(f"Git cache found {len(tags)} tags")
                 versions.extend(tags)  # Add all tags
             else:
+                logger.info("Using fallback direct git commands (no git cache)")
                 # Fallback to direct git commands
                 # Get branches
                 result = run_command_with_retry([
@@ -935,11 +941,14 @@ class DeploymentManager:
                 ])
                 
                 if result.returncode == 0:
+                    branch_count = 0
                     for line in result.stdout.strip().split('\n'):
                         if 'refs/heads/' in line:
                             branch = line.split('refs/heads/')[-1]
                             # Include all branches, not just specific ones
                             versions.append(branch)
+                            branch_count += 1
+                    logger.info(f"Direct git found {branch_count} branches")
                 
                 # Get tags
                 result = run_command_with_retry([
@@ -948,14 +957,18 @@ class DeploymentManager:
                 ])
                 
                 if result.returncode == 0:
+                    tag_count = 0
                     for line in result.stdout.strip().split('\n'):
                         if 'refs/tags/' in line and '^{}' not in line:
                             tag = line.split('refs/tags/')[-1]
                             # Include ALL tags
                             versions.append(tag)
+                            tag_count += 1
+                    logger.info(f"Direct git found {tag_count} tags")
             
             # Remove duplicates
             unique_versions = list(set(versions))
+            logger.info(f"Total unique versions before filtering: {len(unique_versions)}")
             
             # Separate into categories
             branch_17 = ["17.0"] if "17.0" in unique_versions else []
@@ -974,11 +987,13 @@ class DeploymentManager:
             other_branches = sorted([v for v in unique_versions 
                                    if v not in branch_17 + tags])
             
+            logger.info(f"Categorized: {len(tags)} tags, {len(other_branches)} branches, 17.0 branch: {len(branch_17)}")
+            
             # Combine in priority order: 17.0 first, then tags (newest first), then other branches
             self.config.available_openspp_versions = branch_17 + tags + other_branches
-            logger.info(f"Found {len(self.config.available_openspp_versions)} OpenSPP versions")
-            logger.debug(f"Branches: {other_branches[:10]}")  # Log first 10 branches
-            logger.debug(f"Tags: {tags[:10]}")  # Log first 10 tags
+            logger.info(f"Final list has {len(self.config.available_openspp_versions)} OpenSPP versions")
+            logger.info(f"First 5 tags: {tags[:5]}")
+            logger.info(f"First 5 branches: {other_branches[:5]}")
             
         except Exception as e:
             logger.error(f"Failed to fetch OpenSPP versions: {e}")

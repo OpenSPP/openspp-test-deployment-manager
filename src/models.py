@@ -123,6 +123,8 @@ class AppConfig:
         if 'git' in data:
             config.openspp_docker_repo = data['git'].get('openspp_docker_repo', config.openspp_docker_repo)
             config.default_branch = data['git'].get('default_branch', config.default_branch)
+            config.git_cache_enabled = data['git'].get('git_cache_enabled', True)  # Default to True
+            config.git_cache_path = data['git'].get('git_cache_path', config.git_cache_path)
         
         if 'docker' in data:
             if 'resource_limits' in data['docker']:
