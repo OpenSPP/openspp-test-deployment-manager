@@ -78,6 +78,12 @@ class DeploymentManager:
         # Get port mappings
         port_mappings = get_port_mappings(port_base)
         
+        # Generate random password for nginx auth
+        import secrets
+        import string
+        alphabet = string.ascii_letters + string.digits
+        auth_password = ''.join(secrets.choice(alphabet) for _ in range(16))
+        
         # Create deployment object
         deployment = Deployment(
             id=deployment_id,
@@ -90,7 +96,8 @@ class DeploymentManager:
             port_base=port_base,
             port_mappings=port_mappings,
             subdomain=self._generate_subdomain(deployment_id),
-            notes=params.notes
+            notes=params.notes,
+            auth_password=auth_password
         )
         
         # Save initial deployment record

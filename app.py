@@ -218,6 +218,18 @@ def show_deployment_card(deployment, col_actions):
         with st.expander("📝 Notes"):
             st.text(deployment.notes)
     
+    # Show auth credentials if available
+    config = load_config()
+    if config.nginx_enabled and deployment.auth_password:
+        with st.expander("🔐 Credentials"):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.text("Username:")
+                st.code(deployment.id)
+            with col2:
+                st.text("Password:")
+                st.code(deployment.auth_password)
+    
     st.divider()
 
 def show_create_deployment_form():
@@ -481,6 +493,19 @@ def show_deployment_management(deployment_id):
             st.text(service)
         with col2:
             st.code(url)
+    
+    # Display authentication credentials for external access
+    if config.nginx_enabled and deployment.auth_password:
+        st.markdown("### 🔐 Authentication Credentials")
+        st.info(f"External domains (*.test.openspp.org) require authentication")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.text("Username:")
+            st.code(deployment.id)
+        with col2:
+            st.text("Password:")
+            st.code(deployment.auth_password)
+        st.caption("💡 Internal domains (*.openspp-test.internal) do not require authentication")
     
     st.divider()
     

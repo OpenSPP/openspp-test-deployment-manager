@@ -34,6 +34,7 @@ class Deployment:
     modules_installed: List[str] = field(default_factory=list)  # Installed modules
     last_action: str = ""      # Last executed action
     notes: str = ""            # Tester notes
+    auth_password: str = ""    # Random password for nginx basic auth
     
     def to_dict(self) -> dict:
         """Convert deployment to dictionary for JSON serialization"""
@@ -52,7 +53,8 @@ class Deployment:
             "subdomain": self.subdomain,
             "modules_installed": self.modules_installed,
             "last_action": self.last_action,
-            "notes": self.notes
+            "notes": self.notes,
+            "auth_password": self.auth_password
         }
     
     @classmethod
