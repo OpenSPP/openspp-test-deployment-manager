@@ -263,7 +263,10 @@ class DeploymentManager:
                 if progress_callback:
                     progress_callback("Setting up domain configuration...", "")
                 logger.info(f"Setting up domain for {deployment_id}")
-                self.domain_manager.setup_deployment_domain(deployment)
+                try:
+                    self.domain_manager.setup_deployment_domain(deployment)
+                except Exception as e:
+                    logger.warning(f"Failed to setup nginx domain: {e}. Continuing without nginx.")
                 if progress_callback:
                     progress_callback("Domain configured", f"Accessible at {deployment.subdomain}")
             else:
@@ -448,7 +451,10 @@ class DeploymentManager:
             # Remove nginx config
             if self.config.nginx_enabled:
                 with performance_tracker.track_operation(f"Remove nginx config {deployment_id}", show_progress=False):
-                    self.domain_manager.cleanup_deployment_domain(deployment.id)
+                    try:
+                        self.domain_manager.cleanup_deployment_domain(deployment.id)
+                    except Exception as e:
+                        logger.warning(f"Failed to cleanup nginx domain: {e}. Continuing.")
             
             # Remove deployment directory
             with performance_tracker.track_operation(f"Remove deployment directory {deployment_id}", show_progress=False):
@@ -889,7 +895,10 @@ class DeploymentManager:
         
         # Remove nginx config
         if self.config.nginx_enabled:
-            self.domain_manager.cleanup_deployment_domain(deployment.id)
+            try:
+                self.domain_manager.cleanup_deployment_domain(deployment.id)
+            except Exception as e:
+                logger.warning(f"Failed to cleanup nginx domain: {e}. Continuing.")
         
         # Free port allocation
         self.db.delete_deployment(deployment.id)
