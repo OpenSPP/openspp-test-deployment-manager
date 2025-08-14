@@ -60,7 +60,8 @@ class DeploymentDatabase:
                     subdomain TEXT,
                     modules_installed TEXT,
                     last_action TEXT,
-                    notes TEXT
+                    notes TEXT,
+                    auth_password TEXT DEFAULT ''
                 )
             ''')
             
@@ -100,15 +101,16 @@ class DeploymentDatabase:
                     INSERT OR REPLACE INTO deployments (
                         id, name, tester_email, openspp_version, dependency_versions,
                         environment, status, created_at, last_updated, port_base,
-                        port_mappings, subdomain, modules_installed, last_action, notes
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        port_mappings, subdomain, modules_installed, last_action, notes,
+                        auth_password
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     deployment.id, deployment.name, deployment.tester_email,
                     deployment.openspp_version, dep_versions, deployment.environment,
                     deployment.status.value, deployment.created_at.isoformat(),
                     deployment.last_updated.isoformat(), deployment.port_base,
                     port_mappings, deployment.subdomain, modules,
-                    deployment.last_action, deployment.notes
+                    deployment.last_action, deployment.notes, deployment.auth_password
                 ))
                 
                 # Handle port allocation
@@ -317,6 +319,10 @@ class DeploymentDatabase:
         # Convert status string to enum
         if 'status' in data and isinstance(data['status'], str):
             data['status'] = DeploymentStatus(data['status'])
+        
+        # Handle missing auth_password for backward compatibility
+        if 'auth_password' not in data:
+            data['auth_password'] = ''
         
         return Deployment(**data)
 
