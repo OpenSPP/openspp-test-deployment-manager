@@ -70,3 +70,4 @@ uv.lock
 
 # Git cache for repositories
 .git_cache/
+config-dev.yaml
