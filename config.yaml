@@ -1,16 +1,17 @@
-# OpenSPP Deployment Manager Configuration - Mac Version
+# OpenSPP Deployment Manager Configuration - LXD Container Version
 app:
-  title: "OpenSPP Deployment Manager"
+  title: "OpenSPP Test Deployment Manager"
   port: 8501
   debug: false
 
 deployment:
   base_path: "./deployments"
-  max_per_tester: 3
+  max_per_tester: 4  # Allow more deployments with our resources
   
 git:
   openspp_docker_repo: "https://github.com/OpenSPP/openspp-docker.git"
   default_branch: "17.0"
+  git_cache_path: "./.git_cache"
   
 docker:
   compose_command: "docker compose"
@@ -21,7 +22,7 @@ docker:
     
 ports:
   range_start: 18000
-  range_end: 19000
+  range_end: 19999  # Extended range for more deployments
   services:
     odoo: 0      # base + 0
     smtp: 25     # base + 25  
