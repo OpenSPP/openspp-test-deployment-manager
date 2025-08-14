@@ -18,7 +18,10 @@ logger = logging.getLogger(__name__)
 def test_version_fetching():
     """Test version fetching to see what's being detected"""
     # Load config
-    config = AppConfig.from_file('config.yaml')
+    import yaml
+    with open('config.yaml', 'r') as f:
+        config_data = yaml.safe_load(f)
+    config = AppConfig.from_yaml(config_data)
     
     print(f"Git cache enabled: {config.git_cache_enabled}")
     print(f"Git cache path: {config.git_cache_path}")
