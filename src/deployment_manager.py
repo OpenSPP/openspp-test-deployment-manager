@@ -18,7 +18,7 @@ import yaml
 from src.models import Deployment, DeploymentParams, AppConfig, TaskResult, DeploymentStatus
 from src.database import DeploymentDatabase
 from src.docker_handler import DockerComposeHandler, DockerResourceMonitor
-from src.domain_manager import DomainManager
+from src.nginx_manager import NginxManager
 from src.git_cache import GitCacheManager
 from src.utils import (
     validate_deployment_name, validate_email, sanitize_deployment_id,
@@ -36,7 +36,7 @@ class DeploymentManager:
     def __init__(self, config: AppConfig):
         self.config = config
         self.db = DeploymentDatabase()
-        self.domain_manager = DomainManager(config)
+        self.nginx_manager = NginxManager(config) if config.nginx_enabled else None
         self.resource_monitor = DockerResourceMonitor()
         
         # Initialize git cache if enabled
@@ -49,6 +49,46 @@ class DeploymentManager:
         
         # Load available versions on init
         self._refresh_available_versions()
+        
+        # Reconcile nginx configs on startup
+        if self.nginx_manager:
+            self._reconcile_nginx_on_startup()
+    
+    def _reconcile_nginx_on_startup(self):
+        """Reconcile nginx configs with actual deployments on startup"""
+        try:
+            logger.info("Starting nginx configuration reconciliation...")
+            
+            # Ensure nginx base config is proper
+            success, msg = self.nginx_manager.ensure_nginx_base_config()
+            if not success:
+                logger.error(f"Failed to ensure nginx base config: {msg}")
+            
+            # Get all deployments
+            deployments = self.db.get_all_deployments()
+            
+            # Reconcile configs
+            results = self.nginx_manager.reconcile_nginx_configs(deployments)
+            
+            logger.info(f"Nginx reconciliation completed: "
+                       f"checked={results['checked']}, "
+                       f"created={results['created']}, "
+                       f"updated={results['updated']}, "
+                       f"removed={results['removed']}")
+            
+            if results['errors']:
+                logger.warning(f"Reconciliation errors: {results['errors']}")
+            
+            # Reload nginx if any changes were made
+            if results['created'] > 0 or results['updated'] > 0 or results['removed'] > 0:
+                success, msg = self.nginx_manager.validate_and_reload_nginx()
+                if success:
+                    logger.info("Nginx reloaded after reconciliation")
+                else:
+                    logger.error(f"Failed to reload nginx after reconciliation: {msg}")
+                    
+        except Exception as e:
+            logger.error(f"Failed to reconcile nginx configs on startup: {e}")
     
     def create_deployment(self, params: DeploymentParams, progress_callback=None) -> Tuple[bool, str, Optional[Deployment]]:
         """Create a new deployment"""
@@ -271,7 +311,9 @@ class DeploymentManager:
                     progress_callback("Setting up domain configuration...", "")
                 logger.info(f"Setting up domain for {deployment_id}")
                 try:
-                    self.domain_manager.setup_deployment_domain(deployment)
+                    success, msg = self.nginx_manager.setup_deployment_domain(deployment)
+                    if not success:
+                        logger.error(f"Failed to setup nginx for {deployment.id}: {msg}")
                 except Exception as e:
                     logger.warning(f"Failed to setup nginx domain: {e}. Continuing without nginx.")
                 if progress_callback:
@@ -459,7 +501,9 @@ class DeploymentManager:
             if self.config.nginx_enabled:
                 with performance_tracker.track_operation(f"Remove nginx config {deployment_id}", show_progress=False):
                     try:
-                        self.domain_manager.cleanup_deployment_domain(deployment.id)
+                        success, msg = self.nginx_manager.cleanup_deployment_domain(deployment.id)
+                        if not success:
+                            logger.warning(f"Failed to cleanup nginx for {deployment.id}: {msg}")
                     except Exception as e:
                         logger.warning(f"Failed to cleanup nginx domain: {e}. Continuing.")
             
@@ -557,6 +601,34 @@ class DeploymentManager:
             "stats": container_stats,
             "logs": {}  # Could add recent logs here
         }
+    
+    def get_nginx_status(self) -> Dict[str, any]:
+        """Get nginx status and configuration info"""
+        if not self.nginx_manager:
+            return {'enabled': False}
+        
+        status = self.nginx_manager.get_nginx_status()
+        status['enabled'] = True
+        return status
+    
+    def reconcile_nginx_configs(self) -> Dict[str, any]:
+        """Manually trigger nginx config reconciliation"""
+        if not self.nginx_manager:
+            return {'error': 'Nginx is not enabled'}
+        
+        try:
+            deployments = self.db.get_all_deployments()
+            results = self.nginx_manager.reconcile_nginx_configs(deployments)
+            
+            # Reload if changes were made
+            if results['created'] > 0 or results['updated'] > 0 or results['removed'] > 0:
+                success, msg = self.nginx_manager.validate_and_reload_nginx()
+                results['reload_success'] = success
+                results['reload_message'] = msg
+            
+            return results
+        except Exception as e:
+            return {'error': str(e)}
     
     def get_deployment_logs(self, deployment_id: str, service: str = None, 
                            tail: int = 100) -> str:
@@ -903,7 +975,7 @@ class DeploymentManager:
         # Remove nginx config
         if self.config.nginx_enabled:
             try:
-                self.domain_manager.cleanup_deployment_domain(deployment.id)
+                self.nginx_manager.cleanup_deployment_domain(deployment.id)
             except Exception as e:
                 logger.warning(f"Failed to cleanup nginx domain: {e}. Continuing.")
         

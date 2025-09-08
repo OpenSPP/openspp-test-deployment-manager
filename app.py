@@ -783,6 +783,47 @@ def show_system_overview():
         st.success("States synced")
         st.rerun()
     
+    # Nginx status and controls
+    nginx_status = manager.get_nginx_status()
+    if nginx_status.get('enabled'):
+        st.sidebar.markdown("### 🌐 Nginx Status")
+        
+        # Show nginx status
+        if nginx_status.get('running'):
+            st.sidebar.success("✅ Nginx is running")
+        else:
+            st.sidebar.error("❌ Nginx is not running")
+        
+        if nginx_status.get('config_valid'):
+            st.sidebar.success("✅ Config is valid")
+        else:
+            st.sidebar.error("❌ Config has errors")
+        
+        # Show last reload info
+        if nginx_status.get('last_reload_time'):
+            from src.utils import format_relative_date
+            reload_time = format_relative_date(nginx_status['last_reload_time'])
+            if nginx_status.get('last_reload_status'):
+                st.sidebar.info(f"Last reload: {reload_time}")
+            else:
+                st.sidebar.warning(f"Last reload failed: {reload_time}")
+                if nginx_status.get('last_reload_error'):
+                    st.sidebar.text(nginx_status['last_reload_error'][:100])
+        
+        # Reconcile nginx configs button
+        if st.sidebar.button("🔧 Reconcile Nginx"):
+            with st.spinner("Reconciling nginx configs..."):
+                results = manager.reconcile_nginx_configs()
+                if 'error' in results:
+                    st.sidebar.error(f"Error: {results['error']}")
+                else:
+                    st.sidebar.success(f"Reconciled: {results.get('checked', 0)} checked, "
+                                     f"{results.get('created', 0)} created, "
+                                     f"{results.get('removed', 0)} removed")
+                    if results.get('errors'):
+                        for error in results['errors'][:3]:  # Show first 3 errors
+                            st.sidebar.warning(error)
+    
     # Cleanup button
     if st.sidebar.button("🧹 Cleanup Resources"):
         cleaned = manager.resource_monitor.cleanup_dangling_resources()
