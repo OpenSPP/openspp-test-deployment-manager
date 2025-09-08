@@ -12,6 +12,7 @@ from contextlib import contextmanager
 import shutil
 import time
 from functools import wraps
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -450,3 +451,50 @@ def check_invoke_installed() -> Tuple[bool, str]:
         pass
     
     return False, ""
+
+
+def format_relative_date(date: Optional[datetime]) -> str:
+    """Format a date as relative time (e.g., '2 hours ago', '3 days ago')"""
+    if not date:
+        return ""
+    
+    now = datetime.now()
+    # Ensure both dates are timezone-naive for comparison
+    if date.tzinfo:
+        date = date.replace(tzinfo=None)
+    if now.tzinfo:
+        now = now.replace(tzinfo=None)
+    
+    diff = now - date
+    
+    # Less than a minute
+    if diff.total_seconds() < 60:
+        return "just now"
+    
+    # Less than an hour
+    if diff.total_seconds() < 3600:
+        minutes = int(diff.total_seconds() / 60)
+        return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+    
+    # Less than a day
+    if diff.total_seconds() < 86400:
+        hours = int(diff.total_seconds() / 3600)
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    
+    # Less than a week
+    if diff.days < 7:
+        return f"{diff.days} day{'s' if diff.days != 1 else ''} ago"
+    
+    # Less than a month (approximate)
+    if diff.days < 30:
+        weeks = diff.days // 7
+        return f"{weeks} week{'s' if weeks != 1 else ''} ago"
+    
+    # Less than a year
+    if diff.days < 365:
+        months = diff.days // 30
+        return f"{months} month{'s' if months != 1 else ''} ago"
+    
+    # Years
+    years = diff.days // 365
+    return f"{years} year{'s' if years != 1 else ''} ago"

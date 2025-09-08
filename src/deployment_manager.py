@@ -910,22 +910,35 @@ class DeploymentManager:
         # Free port allocation
         self.db.delete_deployment(deployment.id)
     
-    def _refresh_available_versions(self):
+    def refresh_versions_cache(self):
+        """Public method to force refresh of branch/tag cache"""
+        if self.git_cache:
+            self.git_cache.clear_branch_cache()
+        self._refresh_available_versions(force_refresh=True)
+        logger.info("Refreshed OpenSPP versions cache")
+    
+    def _refresh_available_versions(self, force_refresh: bool = False):
         """Refresh list of available OpenSPP versions (branches and tags)"""
         try:
             versions = []
             
             logger.info(f"Git cache enabled: {self.config.git_cache_enabled}")
             logger.info(f"Git cache object: {self.git_cache is not None}")
+            logger.info(f"Force refresh: {force_refresh}")
             
             if self.git_cache:
                 # Use git cache for faster access
                 repo_url = "https://github.com/openspp/openspp-modules.git"
                 
-                # Get ALL branches
-                branches = self.git_cache.get_available_branches(repo_url)
-                logger.info(f"Git cache found {len(branches)} branches")
-                versions.extend(branches)  # Add all branches
+                # Get branches with dates (with force refresh if requested)
+                branches_with_dates = self.git_cache.get_branches_with_dates(repo_url, force_refresh=force_refresh)
+                logger.info(f"Git cache found {len(branches_with_dates)} branches with dates")
+                
+                # Store branch dates for later use
+                self._branch_dates = branches_with_dates
+                
+                # Add branch names to versions list
+                versions.extend(list(branches_with_dates.keys()))
                 
                 # Get ALL tags
                 tags = self.git_cache.get_available_tags(repo_url)
@@ -933,6 +946,9 @@ class DeploymentManager:
                 versions.extend(tags)  # Add all tags
             else:
                 logger.info("Using fallback direct git commands (no git cache)")
+                # Initialize empty branch dates for fallback
+                self._branch_dates = {}
+                
                 # Fallback to direct git commands
                 # Get branches
                 result = run_command_with_retry([
@@ -971,26 +987,74 @@ class DeploymentManager:
             logger.info(f"Total unique versions before filtering: {len(unique_versions)}")
             
             # Separate into categories
-            branch_17 = ["17.0"] if "17.0" in unique_versions else []
+            import re
             
             # Identify tags vs branches - tags typically have version numbers or specific prefixes
             def is_likely_tag(version):
                 # Tags often start with v followed by version numbers
-                import re
                 return (
                     version.startswith("v") or  # Most tags start with v
                     version.startswith("openspp-") or  # In case there are any openspp- tags
-                    (re.search(r'\d+\.\d+\.\d+', version) and not version in ["15.0", "17.0"])  # Has semantic version but not branch names
+                    (re.search(r'\d+\.\d+\.\d+', version) and version not in ["15.0", "17.0"])  # Has semantic version but not branch names
                 )
             
-            tags = sorted([v for v in unique_versions if is_likely_tag(v) and v != "17.0"], reverse=True)
-            other_branches = sorted([v for v in unique_versions 
-                                   if v not in branch_17 + tags])
+            # Categorize versions
+            default_branch = "17.0" if "17.0" in unique_versions else None
+            active_branches = []
+            other_branches = []
+            tags = []
             
-            logger.info(f"Categorized: {len(tags)} tags, {len(other_branches)} branches, 17.0 branch: {len(branch_17)}")
+            # Get branch dates for filtering active branches
+            branch_dates = getattr(self, '_branch_dates', {})
             
-            # Combine in priority order: 17.0 first, then tags (newest first), then other branches
-            self.config.available_openspp_versions = branch_17 + tags + other_branches
+            # Calculate date threshold for active branches (30 days ago)
+            from datetime import datetime, timedelta
+            now = datetime.now()
+            one_month_ago = now - timedelta(days=30)
+            
+            for version in unique_versions:
+                if version == "17.0":
+                    continue  # Already handled as default
+                elif is_likely_tag(version):
+                    tags.append(version)
+                else:
+                    # Check if branch was updated in the last month
+                    branch_date = branch_dates.get(version)
+                    if branch_date and branch_date > one_month_ago:
+                        # Branch updated within last month - it's active
+                        active_branches.append(version)
+                    else:
+                        # Older branch or no date available
+                        other_branches.append(version)
+            
+            # Sort each category
+            # Sort active branches by date (most recent first)
+            active_branches.sort(key=lambda b: branch_dates.get(b, datetime.min), reverse=True)
+            tags.sort(reverse=True)  # Newest first for tags
+            other_branches.sort()  # Alphabetical for other branches
+            
+            logger.info(f"Categorized: Default: {default_branch}, Active (last 30 days): {len(active_branches)}, Tags: {len(tags)}, Other: {len(other_branches)}")
+            logger.info(f"Sample active branches: {active_branches[:5] if active_branches else 'None'}")
+            
+            # Store categorized versions with dates
+            branch_dates = getattr(self, '_branch_dates', {})
+            
+            self.config.available_openspp_versions_categorized = {
+                "default": default_branch,
+                "active": active_branches,  # All branches from last 30 days (naturally limited)
+                "tags": tags[:10],  # Limit tags to most recent 10
+                "other": other_branches,
+                "dates": branch_dates  # Store dates for all branches
+            }
+            
+            # Also keep flat list for backward compatibility
+            flat_list = []
+            if default_branch:
+                flat_list.append(default_branch)
+            flat_list.extend(active_branches)
+            flat_list.extend(tags)
+            flat_list.extend(other_branches)
+            self.config.available_openspp_versions = flat_list
             logger.info(f"Final list has {len(self.config.available_openspp_versions)} OpenSPP versions")
             logger.info(f"First 5 tags: {tags[:5]}")
             logger.info(f"First 5 branches: {other_branches[:5]}")
@@ -999,6 +1063,7 @@ class DeploymentManager:
             logger.error(f"Failed to fetch OpenSPP versions: {e}")
             # Leave empty if fetch fails - UI will handle this
             self.config.available_openspp_versions = []
+            self.config.available_openspp_versions_categorized = {}
     
     def get_available_dependency_branches(self, repo_name: str) -> List[str]:
         """Get available branches for a dependency from both OpenSPP and OpenG2P repos"""

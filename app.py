@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from src.models import AppConfig, DeploymentParams, DeploymentStatus
 from src.deployment_manager import DeploymentManager
-from src.utils import validate_email, validate_deployment_name, format_bytes
+from src.utils import validate_email, validate_deployment_name, format_bytes, format_relative_date
 from src.performance_tracker import performance_tracker
 
 # Load environment variables
@@ -237,8 +237,22 @@ def show_create_deployment_form():
     manager = get_deployment_manager()
     config = load_config()
     
-    with st.form("create_deployment", clear_on_submit=True):
+    # Header with refresh button outside the form
+    header_col1, header_col2 = st.columns([5, 1])
+    with header_col1:
         st.subheader("Create New Deployment")
+    with header_col2:
+        if st.button("🔄 Refresh", key="refresh_versions", help="Refresh branches and tags"):
+            with st.spinner("Refreshing branches and tags..."):
+                # Clear Streamlit cache for dependency branches
+                get_cached_dependency_branches.clear()
+                # Refresh the versions in deployment manager
+                manager.refresh_versions_cache()
+                st.success("Branches and tags refreshed!")
+                time.sleep(0.5)  # Brief pause to show success message
+                st.rerun()
+    
+    with st.form("create_deployment", clear_on_submit=True):
         
         # Basic Information
         col1, col2 = st.columns(2)
@@ -272,17 +286,96 @@ def show_create_deployment_form():
                     st.rerun()
                 st.stop()
             
-            # Default to "17.0" branch if available, otherwise use first version
-            default_index = 0
-            if "17.0" in versions:
-                default_index = versions.index("17.0")
+            # Build categorized version list for display
+            display_versions = []
+            version_map = {}  # Map display string to actual version
             
-            openspp_version = st.selectbox(
+            # Use categorized versions if available
+            if hasattr(manager.config, 'available_openspp_versions_categorized'):
+                categorized = manager.config.available_openspp_versions_categorized
+                branch_dates = categorized.get("dates", {})
+                
+                # Default branch
+                if categorized.get("default"):
+                    display_versions.append(f"── Default Branch ──")
+                    branch_name = categorized['default']
+                    date_str = ""
+                    if branch_name in branch_dates and branch_dates[branch_name]:
+                        date_str = f" ({format_relative_date(branch_dates[branch_name])})"
+                    display_name = f"  🎯 {branch_name}{date_str}"
+                    display_versions.append(display_name)
+                    version_map[display_name] = branch_name
+                
+                # Active branches (last 30 days)
+                if categorized.get("active"):
+                    display_versions.append(f"── Recent Activity (Last 30 days) ──")
+                    for branch in categorized["active"]:
+                        date_str = ""
+                        if branch in branch_dates and branch_dates[branch]:
+                            date_str = f" ({format_relative_date(branch_dates[branch])})"
+                        display_name = f"  📌 {branch}{date_str}"
+                        display_versions.append(display_name)
+                        version_map[display_name] = branch
+                
+                # Recent tags
+                if categorized.get("tags"):
+                    display_versions.append(f"── Recent Tags ──")
+                    for tag in categorized["tags"]:
+                        display_name = f"  🏷️ {tag}"
+                        display_versions.append(display_name)
+                        version_map[display_name] = tag
+                
+                # Other branches
+                if categorized.get("other"):
+                    display_versions.append(f"── Other Branches ──")
+                    for branch in categorized["other"]:
+                        date_str = ""
+                        if branch in branch_dates and branch_dates[branch]:
+                            date_str = f" ({format_relative_date(branch_dates[branch])})"
+                        display_name = f"  📁 {branch}{date_str}"
+                        display_versions.append(display_name)
+                        version_map[display_name] = branch
+                
+                # Default selection
+                default_index = 1 if len(display_versions) > 1 else 0  # Select first actual version, not header
+            else:
+                # Fallback to flat list
+                display_versions = versions
+                version_map = {v: v for v in versions}
+                default_index = versions.index("17.0") if "17.0" in versions else 0
+            
+            # Custom selectbox that doesn't allow selecting headers
+            def format_option(option):
+                if option.startswith("──"):
+                    return option
+                return option
+            
+            selected_display = st.selectbox(
                 "OpenSPP Version",
-                versions,
+                display_versions,
                 index=default_index,
-                help="Select OpenSPP version to deploy (branch or tag)"
+                help="Select OpenSPP version to deploy (branch or tag)",
+                format_func=format_option,
+                disabled=False
             )
+            
+            # Validate selection and get actual version
+            if selected_display.startswith("──"):
+                st.error("Please select a valid version, not a category header")
+                openspp_version = None
+            else:
+                # Get version from map (which handles the complex display strings with dates)
+                openspp_version = version_map.get(selected_display)
+                if not openspp_version:
+                    # Fallback: try to extract from display string
+                    # Remove emoji and date part (everything after first parenthesis)
+                    cleaned = selected_display.strip()
+                    for emoji in ["🎯", "📌", "🏷️", "📁"]:
+                        cleaned = cleaned.replace(emoji, "")
+                    # Remove date part if present
+                    if "(" in cleaned:
+                        cleaned = cleaned.split("(")[0]
+                    openspp_version = cleaned.strip()
             
             notes = st.text_area(
                 "Notes",
@@ -396,6 +489,9 @@ def show_create_deployment_form():
                 errors.append("Deployment name is required")
             elif not validate_deployment_name(deployment_name):
                 errors.append("Invalid deployment name format")
+            
+            if not openspp_version:
+                errors.append("Please select a valid OpenSPP version (not a category header)")
             
             if errors:
                 for error in errors:

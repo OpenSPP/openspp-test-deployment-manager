@@ -103,6 +103,7 @@ class AppConfig:
     
     # Available versions (fetched from git)
     available_openspp_versions: List[str] = field(default_factory=list)
+    available_openspp_versions_categorized: Dict[str, any] = field(default_factory=dict)
     available_dependency_branches: Dict[str, List[str]] = field(default_factory=dict)
     
     # Nginx configuration

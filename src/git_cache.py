@@ -197,10 +197,10 @@ class GitCacheManager:
             return True
         return datetime.now() - self._last_fetch[repo_url] > self._cache_ttl
     
-    def get_available_branches(self, repo_url: str) -> List[str]:
+    def get_available_branches(self, repo_url: str, force_refresh: bool = False) -> List[str]:
         """Get list of available branches from cached repo"""
-        # Check in-memory cache first
-        if self._is_cache_valid(repo_url) and 'branches' in self._branch_cache.get(repo_url, {}):
+        # Check in-memory cache first (unless force refresh)
+        if not force_refresh and self._is_cache_valid(repo_url) and 'branches' in self._branch_cache.get(repo_url, {}):
             return self._branch_cache[repo_url].get('branches', [])
         
         repo_path = self.get_cached_repo_path(repo_url)
@@ -212,9 +212,11 @@ class GitCacheManager:
         try:
             repo = git.Repo(repo_path)
             
-            # Only fetch if needed
-            if self._should_fetch(repo_url):
-                repo.git.fetch('--all')
+            # Force fetch if requested or if needed by TTL
+            if force_refresh or self._should_fetch(repo_url):
+                logger.info(f"Fetching all branches for {repo_url} (force={force_refresh})")
+                # Use prune to remove stale branches and fetch all
+                repo.git.fetch('--all', '--prune')
                 self._last_fetch[repo_url] = datetime.now()
             
             branches = []
@@ -224,6 +226,7 @@ class GitCacheManager:
                     branches.append(branch_name)
             
             branches = sorted(branches)
+            logger.info(f"Found {len(branches)} branches for {repo_url}")
             
             # Update cache
             if repo_url not in self._branch_cache:
@@ -236,6 +239,46 @@ class GitCacheManager:
         except Exception as e:
             logger.error(f"Failed to get branches for {repo_url}: {e}")
             return []
+    
+    def get_branches_with_dates(self, repo_url: str, force_refresh: bool = False) -> Dict[str, datetime]:
+        """Get branches with their last commit dates"""
+        repo_path = self.get_cached_repo_path(repo_url)
+        
+        if not repo_path.exists():
+            # Update cache first
+            self.update_or_clone_repo(repo_url)
+        
+        try:
+            repo = git.Repo(repo_path)
+            
+            # Force fetch if requested or if needed by TTL
+            if force_refresh or self._should_fetch(repo_url):
+                logger.info(f"Fetching all branches with dates for {repo_url}")
+                repo.git.fetch('--all', '--prune')
+                self._last_fetch[repo_url] = datetime.now()
+            
+            branches_with_dates = {}
+            
+            # Get all remote branches with their commit dates
+            for ref in repo.references:
+                if ref.name.startswith('origin/') and not ref.name.endswith('/HEAD'):
+                    branch_name = ref.name.replace('origin/', '')
+                    try:
+                        # Get the last commit date for this branch
+                        commit = ref.commit
+                        # GitPython returns timestamp as int, convert to datetime
+                        commit_date = datetime.fromtimestamp(commit.committed_date)
+                        branches_with_dates[branch_name] = commit_date
+                    except Exception as e:
+                        logger.debug(f"Could not get date for branch {branch_name}: {e}")
+                        branches_with_dates[branch_name] = None
+            
+            logger.info(f"Found {len(branches_with_dates)} branches with dates")
+            return branches_with_dates
+            
+        except Exception as e:
+            logger.error(f"Failed to get branches with dates for {repo_url}: {e}")
+            return {}
     
     def get_available_tags(self, repo_url: str) -> List[str]:
         """Get list of available tags from cached repo"""
@@ -283,6 +326,12 @@ class GitCacheManager:
         self._branch_cache.clear()
         self._last_fetch.clear()
     
+    def clear_branch_cache(self):
+        """Clear only the in-memory branch/tag cache without removing repositories"""
+        self._branch_cache.clear()
+        self._last_fetch.clear()
+        logger.info("Cleared branch/tag cache")
+    
     def get_cache_size(self) -> int:
         """Get total size of cache in bytes"""
         total_size = 0
@@ -321,13 +370,13 @@ class GitCacheManager:
         
         return info
     
-    def prewarm_cache(self, repo_urls: List[str]) -> None:
+    def prewarm_cache(self, repo_urls: List[str], force_refresh: bool = False) -> None:
         """Pre-warm cache for multiple repositories"""
-        logger.info(f"Pre-warming cache for {len(repo_urls)} repositories")
+        logger.info(f"Pre-warming cache for {len(repo_urls)} repositories (force={force_refresh})")
         for repo_url in repo_urls:
             try:
                 # This will fetch branches and tags and cache them
-                self.get_available_branches(repo_url)
+                self.get_available_branches(repo_url, force_refresh=force_refresh)
                 self.get_available_tags(repo_url)
             except Exception as e:
                 logger.error(f"Failed to pre-warm cache for {repo_url}: {e}")
