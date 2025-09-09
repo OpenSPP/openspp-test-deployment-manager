@@ -326,7 +326,11 @@ class DeploymentManager:
             
             logger.info(f"Deployment {deployment_id} created successfully")
             if progress_callback:
-                progress_callback("Deployment ready!", f"Access at {deployment.subdomain if self.config.nginx_enabled else f'localhost:{deployment.port_base}'}")
+                if self.config.nginx_enabled:
+                    access_url = f"{deployment_id}.openspp-test.internal"
+                else:
+                    access_url = f"localhost:{deployment.port_base}"
+                progress_callback("Deployment ready!", f"Access at {access_url}")
             return True, "Deployment created successfully", deployment
             
         except Exception as e:

@@ -269,39 +269,36 @@ server {{
     def create_htpasswd_file(self, deployment: Deployment) -> Tuple[bool, str]:
         """Create htpasswd file for basic auth"""
         if not deployment.auth_password:
+            logger.warning(f"No auth password for deployment {deployment.id}")
             return False, f"No auth password for deployment {deployment.id}"
             
         htpasswd_path = Path(f"/etc/nginx/htpasswd-{deployment.id}")
         
         try:
-            # Use htpasswd command to generate the entry
-            result = run_command([
-                "htpasswd", "-bn", deployment.id, deployment.auth_password
-            ])
+            # Generate APR1-MD5 hash (nginx compatible) - exactly as the old code did
+            import crypt
+            # Use deployment.id as username
+            username = deployment.id
+            # Create htpasswd entry
+            htpasswd_entry = f"{username}:{crypt.crypt(deployment.auth_password, crypt.mksalt(crypt.METHOD_MD5))}\n"
             
-            if result.returncode != 0:
-                # Fallback to Python crypt if available
-                try:
-                    import crypt
-                    htpasswd_entry = f"{deployment.id}:{crypt.crypt(deployment.auth_password, crypt.mksalt(crypt.METHOD_MD5))}\n"
-                except ImportError:
-                    # If crypt is not available, return error
-                    return False, "htpasswd command failed and crypt module not available"
-            else:
-                htpasswd_entry = result.stdout
-            
-            # Write to temporary file
+            # Write to temporary file first
             with tempfile.NamedTemporaryFile(mode='w', delete=False) as tmp:
                 tmp.write(htpasswd_entry)
                 tmp_path = tmp.name
             
-            # Move to nginx directory
-            result = run_command(["sudo", "mv", tmp_path, str(htpasswd_path)])
+            # Move to nginx directory (requires sudo)
+            result = run_command(
+                ["sudo", "mv", tmp_path, str(htpasswd_path)]
+            )
+            
             if result.returncode != 0:
-                os.unlink(tmp_path)
+                logger.error(f"Failed to save htpasswd file: {result.stderr}")
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
                 return False, f"Failed to save htpasswd: {result.stderr}"
             
-            # Set permissions
+            # Set proper permissions
             run_command(["sudo", "chmod", "644", str(htpasswd_path)])
             
             logger.info(f"Created htpasswd file for {deployment.id}")
@@ -578,17 +575,27 @@ server {{
     def setup_deployment_domain(self, deployment: Deployment) -> Tuple[bool, str]:
         """Complete domain setup for a deployment with proper error handling"""
         errors = []
+        warnings = []
+        
+        logger.info(f"Starting domain setup for deployment {deployment.id}")
         
         # Ensure base nginx config is proper
         success, msg = self.ensure_nginx_base_config()
         if not success:
-            errors.append(f"Base config: {msg}")
+            warnings.append(f"Base config: {msg}")
         
-        # Create htpasswd file
+        # Create htpasswd file - this is critical for external access
         if deployment.auth_password:
+            logger.info(f"Creating htpasswd file for {deployment.id} with password")
             success, msg = self.create_htpasswd_file(deployment)
             if not success:
-                errors.append(f"htpasswd: {msg}")
+                # This is a critical error - nginx will fail without htpasswd file
+                logger.error(f"Failed to create htpasswd file for {deployment.id}: {msg}")
+                errors.append(f"htpasswd creation failed: {msg}")
+                # Still continue to set up the config, but warn about the issue
+        else:
+            logger.warning(f"No auth_password set for deployment {deployment.id} - htpasswd file will not be created")
+            warnings.append("No authentication password set")
         
         # Save and enable nginx config
         success, msg = self.save_and_enable_nginx_config(deployment)
@@ -598,12 +605,19 @@ server {{
         # Validate and reload
         success, msg = self.validate_and_reload_nginx()
         if not success:
+            # Check if it's specifically the htpasswd file missing
+            if "htpasswd" in msg.lower():
+                logger.error(f"Nginx reload failed due to missing htpasswd file for {deployment.id}")
+                errors.append(f"Nginx config references htpasswd file that doesn't exist")
             # Try to rollback
             self.remove_nginx_config(deployment.id)
             return False, f"Config invalid, rolled back: {msg}"
         
+        # Compile status message
         if errors:
-            return True, f"Setup completed with warnings: {'; '.join(errors)}"
+            return False, f"Setup failed with errors: {'; '.join(errors)}"
+        elif warnings:
+            return True, f"Setup completed with warnings: {'; '.join(warnings)}"
         
         return True, "Domain setup completed successfully"
     

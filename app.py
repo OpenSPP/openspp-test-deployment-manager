@@ -170,7 +170,8 @@ def show_deployment_card(deployment, col_actions):
         # Check if nginx is enabled
         config = load_config()
         if config.nginx_enabled:
-            odoo_url = f"http://{deployment.subdomain}"
+            # Use internal URL by default (no auth required)
+            odoo_url = f"http://{deployment.id}.openspp-test.internal"
         else:
             odoo_url = f"http://localhost:{deployment.port_base}"
         st.link_button(
@@ -221,7 +222,9 @@ def show_deployment_card(deployment, col_actions):
     # Show auth credentials if available
     config = load_config()
     if config.nginx_enabled and deployment.auth_password:
-        with st.expander("🔐 Credentials"):
+        with st.expander("🔐 External Access & Credentials"):
+            st.text("External URL (requires authentication):")
+            st.code(f"http://{deployment.subdomain}")
             col1, col2 = st.columns(2)
             with col1:
                 st.text("Username:")
@@ -229,6 +232,7 @@ def show_deployment_card(deployment, col_actions):
             with col2:
                 st.text("Password:")
                 st.code(deployment.auth_password)
+            st.caption("💡 Use the internal URL above for passwordless access")
     
     st.divider()
 
@@ -566,12 +570,13 @@ def show_deployment_management(deployment_id):
             st.metric("Port", deployment.port_base)
     
     # Access URLs
-    st.markdown("### 🌐 Access URLs")
+    st.markdown("### 🌐 Access URLs (Internal - No Authentication)")
     config = load_config()
     if config.nginx_enabled:
-        odoo_url = f"http://{deployment.subdomain}"
-        mailhog_url = f"http://mailhog-{deployment.subdomain}"
-        pgweb_url = f"http://pgweb-{deployment.subdomain}"
+        # Show internal URLs by default (no auth required)
+        odoo_url = f"http://{deployment.id}.openspp-test.internal"
+        mailhog_url = f"http://mailhog-{deployment.id}.openspp-test.internal"
+        pgweb_url = f"http://pgweb-{deployment.id}.openspp-test.internal"
     else:
         odoo_url = f"http://localhost:{deployment.port_base}"
         mailhog_url = f"http://localhost:{deployment.port_mappings.get('smtp', deployment.port_base + 25)}"
@@ -592,8 +597,25 @@ def show_deployment_management(deployment_id):
     
     # Display authentication credentials for external access
     if config.nginx_enabled and deployment.auth_password:
-        st.markdown("### 🔐 Authentication Credentials")
+        st.markdown("### 🔐 External Access (Requires Authentication)")
         st.info(f"External domains (*.test.openspp.org) require authentication")
+        
+        # Show external URLs
+        st.markdown("**External URLs:**")
+        external_urls = {
+            "Odoo": f"http://{deployment.subdomain}",
+            "Mailhog": f"http://mailhog-{deployment.subdomain}",
+            "PGWeb": f"http://pgweb-{deployment.subdomain}"
+        }
+        
+        for service, url in external_urls.items():
+            col1, col2 = st.columns([1, 4])
+            with col1:
+                st.text(service)
+            with col2:
+                st.code(url)
+        
+        st.markdown("**Credentials:**")
         col1, col2 = st.columns(2)
         with col1:
             st.text("Username:")
@@ -601,7 +623,7 @@ def show_deployment_management(deployment_id):
         with col2:
             st.text("Password:")
             st.code(deployment.auth_password)
-        st.caption("💡 Internal domains (*.openspp-test.internal) do not require authentication")
+        st.caption("💡 Internal domains (*.openspp-test.internal) shown above do not require authentication")
     
     st.divider()
     
