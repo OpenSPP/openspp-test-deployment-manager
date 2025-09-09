@@ -845,6 +845,42 @@ def show_system_overview():
                     if results.get('errors'):
                         for error in results['errors'][:3]:  # Show first 3 errors
                             st.sidebar.warning(error)
+        
+        # Fix htpasswd files button
+        if st.sidebar.button("🔐 Fix htpasswd Files"):
+            with st.spinner("Fixing missing htpasswd files..."):
+                results = manager.fix_htpasswd_files()
+                if 'error' in results:
+                    st.sidebar.error(f"Error: {results['error']}")
+                else:
+                    # Show summary
+                    if results.get('fixed', 0) > 0:
+                        st.sidebar.success(f"✅ Fixed {results['fixed']} missing htpasswd file(s)")
+                    elif results.get('errors', 0) > 0:
+                        st.sidebar.error(f"❌ Failed to fix {results['errors']} file(s)")
+                    else:
+                        st.sidebar.info("All htpasswd files are already OK")
+                    
+                    # Show detailed stats
+                    st.sidebar.text(f"Checked: {results.get('checked', 0)}")
+                    st.sidebar.text(f"Fixed: {results.get('fixed', 0)}")
+                    st.sidebar.text(f"Already OK: {results.get('already_ok', 0)}")
+                    st.sidebar.text(f"Skipped (no pwd): {results.get('skipped', 0)}")
+                    if results.get('errors', 0) > 0:
+                        st.sidebar.text(f"Errors: {results.get('errors', 0)}")
+                    
+                    # Show reload status if we fixed something
+                    if results.get('fixed', 0) > 0 and 'reload_message' in results:
+                        if results.get('reload_success'):
+                            st.sidebar.success("Nginx reloaded successfully")
+                        else:
+                            st.sidebar.error(f"Nginx reload failed: {results['reload_message']}")
+                    
+                    # Show details in expander if there are any
+                    if results.get('details'):
+                        with st.sidebar.expander("Details", expanded=False):
+                            for detail in results['details'][:10]:  # Show first 10 details
+                                st.text(detail)
     
     # Cleanup button
     if st.sidebar.button("🧹 Cleanup Resources"):

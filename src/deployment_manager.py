@@ -634,6 +634,63 @@ class DeploymentManager:
         except Exception as e:
             return {'error': str(e)}
     
+    def fix_htpasswd_files(self) -> Dict[str, any]:
+        """Fix missing htpasswd files for all deployments"""
+        if not self.nginx_manager:
+            return {'error': 'Nginx is not enabled'}
+        
+        results = {
+            'checked': 0,
+            'fixed': 0,
+            'errors': 0,
+            'skipped': 0,
+            'already_ok': 0,
+            'details': []
+        }
+        
+        try:
+            deployments = self.db.get_all_deployments()
+            
+            for deployment in deployments:
+                results['checked'] += 1
+                htpasswd_path = Path(f"/etc/nginx/htpasswd-{deployment.id}")
+                
+                # Check if deployment has a password
+                if not deployment.auth_password:
+                    results['skipped'] += 1
+                    results['details'].append(f"{deployment.id}: No password set")
+                    continue
+                
+                # Check if htpasswd file exists (need sudo to check)
+                check_result = run_command(["sudo", "test", "-f", str(htpasswd_path)])
+                if check_result.returncode == 0:
+                    results['already_ok'] += 1
+                    results['details'].append(f"{deployment.id}: Already exists")
+                    continue
+                
+                # File is missing - recreate it
+                logger.info(f"Recreating missing htpasswd file for {deployment.id}")
+                success, msg = self.nginx_manager.create_htpasswd_file(deployment)
+                
+                if success:
+                    results['fixed'] += 1
+                    results['details'].append(f"{deployment.id}: Fixed")
+                else:
+                    results['errors'] += 1
+                    results['details'].append(f"{deployment.id}: Failed - {msg}")
+            
+            # Reload nginx if we made changes
+            if results['fixed'] > 0:
+                success, msg = self.nginx_manager.validate_and_reload_nginx()
+                results['reload_success'] = success
+                results['reload_message'] = msg
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Failed to fix htpasswd files: {e}")
+            return {'error': str(e)}
+    
     def get_deployment_logs(self, deployment_id: str, service: str = None, 
                            tail: int = 100) -> str:
         """Get deployment logs"""
